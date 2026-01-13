@@ -248,7 +248,7 @@ class TelegramBot:
             if success:
                 return True
             # Fallback to text-only if image fails
-            print(f"[WARN] Image failed, sending text only")
+            print("[WARN] Image failed, sending text only")
 
         # Send as text message
         return await self.send_message(caption, disable_preview=False)

@@ -26,7 +26,8 @@ SOURCES = {
     "dezeen": {
         "name": "Dezeen",
         "domains": ["dezeen.com", "www.dezeen.com"],
-        "rss_url": "https://www.dezeen.com/feed/",
+        # Using Feedburner URL - dezeen.com/feed/ returns 403
+        "rss_url": "http://feeds.feedburner.com/dezeen",
         "scrape_timeout": 25000,
     },
     "designboom": {
@@ -108,16 +109,16 @@ for source_id, config in SOURCES.items():
 def get_source_id(url: str) -> Optional[str]:
     """
     Get source ID from URL.
-    
+
     Args:
         url: Article URL
-        
+
     Returns:
         Source ID (e.g., 'archdaily') or None if not recognized
     """
     if not url:
         return None
-    
+
     try:
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
@@ -129,21 +130,21 @@ def get_source_id(url: str) -> Optional[str]:
 def get_source_name(url: str) -> str:
     """
     Get display name for a source URL.
-    
+
     Args:
         url: Article URL
-        
+
     Returns:
         Human-readable source name (e.g., 'ArchDaily')
     """
     if not url:
         return "Source"
-    
+
     source_id = get_source_id(url)
-    
+
     if source_id and source_id in SOURCES:
         return SOURCES[source_id]["name"]
-    
+
     # Fallback: clean up domain name
     try:
         parsed = urlparse(url)
@@ -153,17 +154,17 @@ def get_source_name(url: str) -> str:
             return parts[0].capitalize()
     except:
         pass
-    
+
     return "Source"
 
 
 def get_source_config(source_id: str) -> Optional[dict]:
     """
     Get full configuration for a source.
-    
+
     Args:
         source_id: Source ID (e.g., 'archdaily')
-        
+
     Returns:
         Source config dict or None
     """
@@ -173,10 +174,10 @@ def get_source_config(source_id: str) -> Optional[dict]:
 def get_source_rss(source_id: str) -> Optional[str]:
     """
     Get RSS URL for a source.
-    
+
     Args:
         source_id: Source ID
-        
+
     Returns:
         RSS feed URL or None
     """
@@ -189,7 +190,7 @@ def get_source_rss(source_id: str) -> Optional[str]:
 def get_all_rss_sources() -> list[dict]:
     """
     Get all sources that have RSS feeds.
-    
+
     Returns:
         List of dicts with 'id', 'name', 'rss_url'
     """
@@ -216,17 +217,17 @@ if __name__ == "__main__":
         "https://www.domusweb.it/en/architecture/2024/project.html",
         "https://unknown-site.com/article",
     ]
-    
+
     print("Source Registry Test")
     print("=" * 50)
-    
+
     for url in test_urls:
         name = get_source_name(url)
         source_id = get_source_id(url)
         print(f"{url[:40]}...")
         print(f"  -> Name: {name}, ID: {source_id}")
         print()
-    
+
     print("RSS Sources:")
     print("=" * 50)
     for source in get_all_rss_sources():

@@ -29,8 +29,7 @@ Source: {url}
 
 Respond with ONLY:
 1. A 2-sentence summary
-2. On a new line, 2-3 relevant tags as comma-separated lowercase words
-
+2. On a new line, 2-3 relevant tags as comma-separated lowercase words. tags shouldn't have spaces or hyphens. 
 Example format:
 Studio XYZ has completed a residential tower in Tokyo featuring a diagrid structural system. The 32-story building uses cross-laminated timber for its facade, making it one of the tallest timber-hybrid structures in Asia.
 
