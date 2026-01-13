@@ -1,3 +1,4 @@
+# main.py
 """
 ArchNews Monitor - Main Entry Point
 Central orchestrator for the architecture news monitoring application.
@@ -31,7 +32,7 @@ from storage.r2 import R2Storage
 from telegram_bot import TelegramBot
 
 # Import prompts
-from prompts import SUMMARIZE_PROMPT_TEMPLATE
+from prompts.summarize import SUMMARIZE_PROMPT_TEMPLATE
 
 
 # =============================================================================

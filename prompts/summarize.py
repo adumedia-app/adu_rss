@@ -1,3 +1,4 @@
+# prompts/summarize.py
 """
 Summarization Prompts
 Prompts for generating article summaries and tags.

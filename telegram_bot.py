@@ -1,3 +1,4 @@
+# telegram_bot.py
 """
 Telegram Bot Module
 Handles all communication between backend and Telegram interface.

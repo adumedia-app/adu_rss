@@ -1,3 +1,4 @@
+# storage/r2.py
 """
 Cloudflare R2 Storage Module
 Handles all interactions with Cloudflare R2 for storing scraped news data.

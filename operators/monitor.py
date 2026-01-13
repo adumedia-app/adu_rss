@@ -1,3 +1,4 @@
+# operators/monitor.py
 """
 ArchDaily News Monitor
 Collects news from ArchDaily RSS and summarizes with AI.
@@ -21,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 from langchain_openai import ChatOpenAI
 
-from prompts import SUMMARIZE_PROMPT_TEMPLATE
+from prompts.summarize import SUMMARIZE_SYSTEM_PROMPT
 from prompts.summarize import parse_summary_response
 
 # Configuration

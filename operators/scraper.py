@@ -1,3 +1,4 @@
+# operators/scraper.py
 """
 ArchNews Article Scraper
 Scrapes full article content from architecture news sites using Railway Browserless.
