@@ -339,6 +339,20 @@ def get_sources_by_region(region: str) -> list[dict]:
             result.append({"id": source_id, **config})
     return result
 
+def get_source_ids_by_tier(tier: int) -> list[str]:
+    """Get list of source IDs for a specific tier."""
+    return [
+        source_id for source_id, config in SOURCES.items()
+        if config.get("tier") == tier and config.get("rss_url")
+    ]
+
+
+def get_all_source_ids() -> list[str]:
+    """Get all source IDs that have RSS feeds configured."""
+    return [
+        source_id for source_id, config in SOURCES.items()
+        if config.get("rss_url")
+    ]
 
 def get_source_stats() -> dict:
     """Get statistics about configured sources."""

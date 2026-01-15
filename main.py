@@ -52,48 +52,18 @@ from telegram_bot import TelegramBot
 # Import prompts and config
 from prompts.summarize import SUMMARIZE_PROMPT_TEMPLATE
 from prompts.filter import FILTER_PROMPT_TEMPLATE, parse_filter_response
-from config.sources import SOURCES, get_source_config, get_sources_by_tier
+from config.sources import (
+    SOURCES,
+    get_source_config,
+    get_source_ids_by_tier,
+    get_all_source_ids,
+)
 
 # Default configuration
 DEFAULT_HOURS_LOOKBACK = 24
 
-# All 20 working sources - organized by tier
-# Tier 1: Global primary sources (high volume, always monitored)
-TIER_1_SOURCES = [
-    "archdaily",
-    "dezeen", 
-    "designboom",
-    "architects_journal",
-]
-
-# Tier 2: Regional/specialty sources
-TIER_2_SOURCES = [
-    # North America
-    "metropolis",
-    "canadian_architect",
-    "design_milk",
-    "leibal",
-    "construction_specifier",
-    # Europe
-    "architectural_review",
-    "landezine",
-    "aasarchitecture",
-    # Asia-Pacific
-    "yellowtrace",
-    "architectureau",
-    "architecture_now",
-    "architecture_update",
-    "indesignlive_sg",
-    # Latin America
-    "archdaily_brasil",
-    "arquine",
-    # Middle East
-    "parametric_architecture",
-]
-
-# Default: ALL sources (Tier 1 + Tier 2)
-DEFAULT_SOURCES = TIER_1_SOURCES + TIER_2_SOURCES
-
+# Source lists are now dynamically pulled from config/sources.py
+# No need to maintain duplicate lists here!
 
 # =============================================================================
 # Hero Image Processing
@@ -391,14 +361,14 @@ async def run_pipeline(
         skip_filter: Skip AI content filtering (include all articles)
         tier: If specified, only process sources from this tier (1 or 2)
     """
-    # Determine sources to process
+    # Determine sources to process (pulled dynamically from config/sources.py)
     if source_ids is None:
         if tier == 1:
-            source_ids = TIER_1_SOURCES
+            source_ids = get_source_ids_by_tier(1)
         elif tier == 2:
-            source_ids = TIER_2_SOURCES
+            source_ids = get_source_ids_by_tier(2)
         else:
-            source_ids = DEFAULT_SOURCES
+            source_ids = get_all_source_ids()
 
     # Filter to only sources with RSS feeds
     valid_sources = []
@@ -655,21 +625,25 @@ def list_available_sources():
     print("\nAvailable sources:")
     print("=" * 60)
 
-    print("\n📌 TIER 1 - Primary Sources (always monitored):")
-    for source_id in TIER_1_SOURCES:
+    tier1_sources = get_source_ids_by_tier(1)
+    tier2_sources = get_source_ids_by_tier(2)
+
+    print(f"\n📌 TIER 1 - Primary Sources ({len(tier1_sources)} sources):")
+    for source_id in tier1_sources:
         config = SOURCES.get(source_id, {})
         name = config.get("name", source_id)
         region = config.get("region", "global")
         print(f"  {source_id:25} {name:30} [{region}]")
 
-    print("\n📍 TIER 2 - Regional/Specialty Sources:")
-    for source_id in TIER_2_SOURCES:
+    print(f"\n📍 TIER 2 - Regional/Specialty Sources ({len(tier2_sources)} sources):")
+    for source_id in tier2_sources:
         config = SOURCES.get(source_id, {})
         name = config.get("name", source_id)
         region = config.get("region", "global")
         print(f"  {source_id:25} {name:30} [{region}]")
 
-    print(f"\n📊 Total: {len(DEFAULT_SOURCES)} sources")
+    total = len(tier1_sources) + len(tier2_sources)
+    print(f"\n📊 Total: {total} sources")
     print()
 
 
