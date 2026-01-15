@@ -51,6 +51,7 @@ from telegram_bot import TelegramBot
 
 # Import prompts and config
 from prompts.summarize import SUMMARIZE_PROMPT_TEMPLATE
+from prompts.filter import FILTER_PROMPT_TEMPLATE, parse_filter_response
 from config.sources import SOURCES, get_source_config, get_sources_by_tier
 
 # Default configuration
@@ -148,6 +149,82 @@ async def download_and_save_hero_images(
     print(f"   ✅ Downloaded {downloaded} hero images ({failed} failed)")
     return articles
 
+# =============================================================================
+# AI Content Filtering
+# =============================================================================
+
+def filter_articles(articles: list[dict], llm, prompt_template) -> tuple[list[dict], list[dict]]:
+    """
+    Filter articles using AI to keep only significant architectural projects.
+
+    Filters OUT: interiors, private residences, product design, small renovations
+    Keeps: large projects, famous firms, public buildings, infrastructure
+
+    Args:
+        articles: List of article dicts
+        llm: LangChain LLM instance
+        prompt_template: Filter prompt template
+
+    Returns:
+        Tuple of (included_articles, excluded_articles)
+    """
+    print(f"\n🔍 Step 3: AI Content Filtering ({len(articles)} articles)...")
+
+    included = []
+    excluded = []
+
+    for i, article in enumerate(articles, 1):
+        source_name = article.get("source_name", "Unknown")
+        title_preview = article.get("title", "")[:45]
+
+        try:
+            # Prepare input
+            title = article.get("title", "No title")
+            description = article.get("description", "")[:1500]
+            source = article.get("source_name", "Unknown")
+
+            # Create chain and invoke
+            chain = prompt_template | llm
+            response = chain.invoke({
+                "title": title,
+                "description": description,
+                "source": source,
+            })
+
+            # Parse response
+            response_text = response.content if hasattr(response, 'content') else str(response)
+            result = parse_filter_response(response_text)
+
+            # Add filter results to article
+            article["filter_include"] = result["include"]
+            article["filter_reason"] = result["reason"]
+
+            if result["include"]:
+                included.append(article)
+                status = "INCLUDE"
+            else:
+                excluded.append(article)
+                status = "EXCLUDE"
+
+            print(f"   [{i}/{len(articles)}] {status}: [{source_name}] {title_preview}...")
+            if result["reason"]:
+                print(f"            -> {result['reason'][:50]}")
+
+        except Exception as e:
+            # On error, include the article to be safe
+            print(f"   [{i}/{len(articles)}] ERROR: {e} - including by default")
+            article["filter_include"] = True
+            article["filter_reason"] = f"Filter error: {e}"
+            included.append(article)
+
+    # Print summary
+    total = len(included) + len(excluded)
+    include_rate = (len(included) / total * 100) if total > 0 else 0
+    print(f"\n   📊 Filter Summary:")
+    print(f"      Included: {len(included)} ({include_rate:.1f}%)")
+    print(f"      Excluded: {len(excluded)}")
+
+    return included, excluded
 
 # =============================================================================
 # AI Summarization
@@ -300,6 +377,7 @@ async def run_pipeline(
     hours: int = DEFAULT_HOURS_LOOKBACK,
     skip_scraping: bool = False,
     skip_telegram: bool = False,
+    skip_filter: bool = False,
     tier: Optional[int] = None,
 ):
     """
@@ -310,6 +388,7 @@ async def run_pipeline(
         hours: How many hours back to look for articles
         skip_scraping: Skip Browserless scraping (use RSS data only)
         skip_telegram: Skip sending to Telegram
+        skip_filter: Skip AI content filtering (include all articles)
         tier: If specified, only process sources from this tier (1 or 2)
     """
     # Determine sources to process
@@ -339,10 +418,12 @@ async def run_pipeline(
     print(f"📅 {datetime.now().strftime('%B %d, %Y at %H:%M')}")
     print(f"📡 Sources: {len(valid_sources)} ({', '.join(valid_sources[:5])}{'...' if len(valid_sources) > 5 else ''})")
     print(f"⏰ Looking back: {hours} hours")
+    print(f"🔍 Content filter: {'disabled' if skip_filter else 'enabled'}")
     print(f"{'=' * 60}")
 
     scraper = None
     r2 = None
+    excluded_articles = []
 
     try:
         # Initialize R2 storage
@@ -356,7 +437,7 @@ async def run_pipeline(
         # =================================================================
         # Step 1: Fetch RSS Feeds
         # =================================================================
-        print(f"\n📡 Step 1: Fetching RSS feeds...")
+        print("\n📡 Step 1: Fetching RSS feeds...")
 
         fetcher = RSSFetcher()
         articles = fetcher.fetch_all_sources(
@@ -384,7 +465,7 @@ async def run_pipeline(
         browserless_available = os.getenv('BROWSER_PLAYWRIGHT_ENDPOINT')
 
         if not skip_scraping and browserless_available:
-            print(f"\n🌐 Step 2: Scraping full article content...")
+            print("\n🌐 Step 2: Scraping full article content...")
 
             scraper = ArticleScraper(browser_pool_size=2)
 
@@ -401,22 +482,14 @@ async def run_pipeline(
                     if article.get("scrape_success") and article.get("full_content"):
                         article["description"] = article["full_content"][:2000]
 
-                # Step 2b: Download & Save Hero Images
-                if r2 and hero_count > 0:
-                    articles = await download_and_save_hero_images(
-                        articles=articles,
-                        scraper=scraper,
-                        r2=r2,
-                    )
-
             except Exception as e:
                 print(f"   ⚠️ Scraping failed: {e}")
                 print("   ℹ️ Continuing with RSS data...")
         else:
             if skip_scraping:
-                print(f"\n⏭️ Step 2: Skipping scraping (--rss-only mode)")
+                print("\n⏭️ Step 2: Skipping scraping (--rss-only mode)")
             else:
-                print(f"\n⏭️ Step 2: Skipping scraping (Browserless not configured)")
+                print("\n⏭️ Step 2: Skipping scraping (Browserless not configured)")
 
             # Use RSS images as hero images when not scraping
             for article in articles:
@@ -430,9 +503,33 @@ async def run_pipeline(
                     }
 
         # =================================================================
-        # Step 3: Generate AI Summaries
+        # Step 3: AI Content Filtering (NEW)
         # =================================================================
-        print(f"\n🤖 Step 3: Generating AI summaries...")
+        if not skip_filter:
+            try:
+                llm = create_llm()
+                articles, excluded_articles = filter_articles(articles, llm, FILTER_PROMPT_TEMPLATE)
+
+                if not articles:
+                    print("📭 No articles passed the filter. Exiting.")
+                    return
+            except Exception as e:
+                print(f"   ⚠️ AI filtering failed: {e}")
+                print("   ℹ️ Continuing with all articles...")
+        else:
+            print("\n⏭️ Step 3: Skipping AI filter (--no-filter mode)")
+
+        # =================================================================
+        # Step 4: Download & Save Hero Images (after filtering)
+        # =================================================================
+        hero_count = sum(1 for a in articles if a.get("hero_image"))
+        if scraper and r2 and hero_count > 0:
+            articles = await download_and_save_hero_images(
+                articles=articles,
+                scraper=scraper,
+                r2=r2,
+            )
+        print("\n🤖 Step 4: Generating AI summaries...")
 
         try:
             llm = create_llm()
@@ -446,20 +543,20 @@ async def run_pipeline(
                     article["tags"] = []
 
         # =================================================================
-        # Step 4: Save to R2 Storage
+        # Step 5: Save to R2 Storage
         # =================================================================
         if r2:
             storage_paths = save_to_r2(articles, r2)
         else:
-            print("\n⚠️ Step 4: Skipping R2 storage (not configured)")
+            print("\n⚠️ Step 5: Skipping R2 storage (not configured)")
 
         # =================================================================
-        # Step 5: Send to Telegram
+        # Step 6: Send to Telegram
         # =================================================================
         if not skip_telegram:
             await send_telegram_digest(articles)
         else:
-            print("\n⏭️ Step 5: Skipping Telegram (disabled)")
+            print("\n⏭️ Step 6: Skipping Telegram (disabled)")
 
         # =================================================================
         # Done
@@ -468,6 +565,8 @@ async def run_pipeline(
         print("✅ Pipeline completed!")
         print(f"   📰 Total articles: {len(articles)}")
         print(f"   📡 Sources processed: {len(by_source)}")
+        if excluded_articles:
+            print(f"   🚫 Articles filtered out: {len(excluded_articles)}")
         for sid, count in sorted(by_source.items()):
             print(f"      - {sid}: {count}")
         hero_saved = sum(1 for a in articles if a.get("hero_image", {}).get("r2_path"))
@@ -501,7 +600,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="ArchNews Monitor - Multi-source architecture news pipeline"
     )
-
+    
     parser.add_argument(
         "--sources",
         nargs="+",
@@ -534,6 +633,12 @@ def parse_args():
         "--no-telegram",
         action="store_true",
         help="Skip sending to Telegram"
+    )
+
+    parser.add_argument(
+        "--no-filter",
+        action="store_true",
+        help="Skip AI content filtering (include all articles)"
     )
 
     parser.add_argument(
@@ -579,5 +684,6 @@ if __name__ == "__main__":
             hours=args.hours,
             skip_scraping=args.rss_only,
             skip_telegram=args.no_telegram,
+            skip_filter=args.no_filter,
             tier=args.tier,
         ))
