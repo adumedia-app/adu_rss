@@ -17,3 +17,5 @@ playwright==1.56.0
 
 # LangSmith tracing
 langsmith>=0.1.0
+
+cloudscraper>=1.2.71

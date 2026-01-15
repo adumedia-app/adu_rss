@@ -46,6 +46,12 @@ from html import unescape
 
 from config.sources import SOURCES, get_source_config
 
+try:
+    import cloudscraper
+    CLOUDSCRAPER_AVAILABLE = True
+except ImportError:
+    CLOUDSCRAPER_AVAILABLE = False
+
 
 # Browser-like User-Agent to avoid 403 blocks
 BROWSER_USER_AGENT = (
@@ -82,11 +88,11 @@ class RSSFetcher:
 
     def _fetch_feed_content(self, url: str, use_browser_ua: bool = False) -> bytes:
         """
-        Fetch RSS feed content with optional browser User-Agent.
+        Fetch RSS feed content with optional browser-like headers.
 
         Args:
             url: RSS feed URL
-            use_browser_ua: Whether to use browser User-Agent
+            use_browser_ua: Whether to use full browser headers
 
         Returns:
             Feed content as bytes
@@ -95,17 +101,58 @@ class RSSFetcher:
             urllib.error.URLError: If fetch fails
         """
         headers = {
-            'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+            'Accept': 'application/rss+xml, application/xml, text/xml, application/atom+xml, */*',
             'Accept-Language': 'en-US,en;q=0.9',
         }
 
         if use_browser_ua:
-            headers['User-Agent'] = BROWSER_USER_AGENT
+            # Full browser-like headers to avoid detection
+            headers.update({
+                'User-Agent': BROWSER_USER_AGENT,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"macOS"',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1',
+                'Connection': 'keep-alive',
+            })
 
         request = urllib.request.Request(url, headers=headers)
 
         with urllib.request.urlopen(request, timeout=self._request_timeout) as response:
             return response.read()
+
+    def _fetch_with_cloudscraper(self, url: str) -> bytes:
+        """
+        Fetch URL using cloudscraper to bypass anti-bot protection.
+
+        Args:
+            url: URL to fetch
+
+        Returns:
+            Response content as bytes
+        """
+        if not CLOUDSCRAPER_AVAILABLE:
+            raise ImportError("cloudscraper not installed")
+
+        scraper = cloudscraper.create_scraper(
+            browser={
+                'browser': 'chrome',
+                'platform': 'darwin',
+                'desktop': True,
+            }
+        )
+        response = scraper.get(url, timeout=self._request_timeout)
+        response.raise_for_status()
+        return response.content
 
     def fetch_source(
         self, 
@@ -152,7 +199,7 @@ class RSSFetcher:
                 try:
                     content = self._fetch_feed_content(rss_url, use_browser_ua=True)
                     feed = feedparser.parse(content)
-                    print(f"   [OK] Fetched with browser User-Agent")
+                    print("   [OK] Fetched with browser User-Agent")
                 except urllib.error.URLError as e:
                     print(f"   [WARN] Browser UA fetch failed: {e}")
 
@@ -167,9 +214,20 @@ class RSSFetcher:
                         feed_with_ua = feedparser.parse(content)
                         if feed_with_ua.entries:
                             feed = feed_with_ua
-                            print(f"   [OK] Recovered with browser User-Agent")
+                            print("   [OK] Recovered with browser User-Agent")
                     except urllib.error.URLError:
                         pass  # Keep original feed result
+
+            # If both standard and browser UA failed, try cloudscraper
+            if (feed is None or not feed.entries) and CLOUDSCRAPER_AVAILABLE:
+                try:
+                    print("   [INFO] Trying cloudscraper...")
+                    content = self._fetch_with_cloudscraper(rss_url)
+                    feed = feedparser.parse(content)
+                    if feed.entries:
+                        print("   [OK] Success with cloudscraper")
+                except Exception as e:
+                    print(f"   [WARN] Cloudscraper failed: {e}")
 
             if feed.bozo and not feed.entries:
                 print(f"[WARN] Feed error for {source_name}: {feed.bozo_exception}")
@@ -256,6 +314,7 @@ class RSSFetcher:
 
         print(f"\n[OK] Total: {len(all_articles)} articles from {len(sources_to_fetch)} sources")
         return all_articles
+
 
     def _parse_entry(
         self, 
