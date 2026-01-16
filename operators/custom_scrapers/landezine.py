@@ -55,7 +55,7 @@ class LandezineScraper(BaseCustomScraper):
             self.tracker = ArticleTracker()
             await self.tracker.connect()
 
-    async def fetch_articles(self, max_new: int = 10) -> list[dict]:
+    async def fetch_articles(self, hours: int = 24) -> list[dict]:
         """
         Fetch new articles from Landezine homepage.
 
@@ -66,11 +66,13 @@ class LandezineScraper(BaseCustomScraper):
         4. Mark new URLs as seen in database
 
         Args:
-            max_new: Maximum number of new articles to process (default: 10)
+            hours: Not used (kept for compatibility with base class)
 
         Returns:
             List of article dicts (only new articles)
         """
+        max_new = 10  # Process up to 10 new articles per run
+
         print(f"[{self.source_id}] Fetching new articles...")
 
         await self._ensure_tracker()
@@ -155,6 +157,11 @@ class LandezineScraper(BaseCustomScraper):
                 # ============================================================
 
                 all_urls = [a['link'] for a in homepage_articles]
+
+                # Ensure tracker is initialized
+                if not self.tracker:
+                    await self._ensure_tracker()
+
                 new_urls = await self.tracker.filter_new_articles(self.source_id, all_urls)
 
                 if not new_urls:
@@ -189,9 +196,10 @@ class LandezineScraper(BaseCustomScraper):
                         await page.wait_for_timeout(1500)
 
                         # Extract publication date and other metadata from article page
-                        article_metadata = await page.evaluate("""
+                        # Use raw string for regex patterns to avoid escape sequence warnings
+                        article_metadata = await page.evaluate(r"""
                             () => {
-                                // Look for publication date
+                                // Look for publication date - using proper regex escaping
                                 const datePatterns = [
                                     /(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})/i,
                                     /(\d{4})-(\d{2})-(\d{2})/
@@ -269,7 +277,8 @@ class LandezineScraper(BaseCustomScraper):
                 # Step 4: Mark all new URLs as seen (even if some failed)
                 # ============================================================
 
-                await self.tracker.mark_as_seen(self.source_id, new_urls)
+                if self.tracker:
+                    await self.tracker.mark_as_seen(self.source_id, new_urls)
 
                 print(f"[{self.source_id}] Successfully extracted {len(new_articles)} new articles")
                 return new_articles
@@ -318,17 +327,19 @@ async def test_landezine_scraper():
         # Show tracker stats
         print("\n2. Checking tracker stats...")
         await scraper._ensure_tracker()
-        stats = await scraper.tracker.get_stats(source_id="landezine")
 
-        print(f"   Total articles in database: {stats['total_articles']}")
-        if stats['oldest_seen']:
-            print(f"   Oldest: {stats['oldest_seen']}")
-        if stats['newest_seen']:
-            print(f"   Newest: {stats['newest_seen']}")
+        if scraper.tracker:
+            stats = await scraper.tracker.get_stats(source_id="landezine")
+
+            print(f"   Total articles in database: {stats['total_articles']}")
+            if stats['oldest_seen']:
+                print(f"   Oldest: {stats['oldest_seen']}")
+            if stats['newest_seen']:
+                print(f"   Newest: {stats['newest_seen']}")
 
         # Fetch new articles (limit to 5 for testing)
         print("\n3. Fetching new articles (max 5)...")
-        articles = await scraper.fetch_articles(max_new=5)
+        articles = await scraper.fetch_articles(hours=24)
 
         print(f"\n   ✅ Found {len(articles)} NEW articles")
 
@@ -346,9 +357,10 @@ async def test_landezine_scraper():
             print("\n4. No new articles (all previously seen)")
 
         # Show updated stats
-        print("\n5. Updated tracker stats...")
-        stats = await scraper.tracker.get_stats(source_id="landezine")
-        print(f"   Total articles in database: {stats['total_articles']}")
+        if scraper.tracker:
+            print("\n5. Updated tracker stats...")
+            stats = await scraper.tracker.get_stats(source_id="landezine")
+            print(f"   Total articles in database: {stats['total_articles']}")
 
         print("\n" + "=" * 60)
         print("Test complete!")
