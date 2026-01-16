@@ -111,6 +111,44 @@ SOURCES = {
         "category": "technical",
         "scrape_timeout": 20000,
     },
+    "architectural_record": {
+        "name": "Architectural Record",
+        "domains": ["architecturalrecord.com", "www.architecturalrecord.com"],
+        "rss_url": "https://www.architecturalrecord.com/rss/topic/305",
+        "tier": 2,
+        "region": "north_america",
+        "category": "technical",
+        "scrape_timeout": 20000,
+    },
+    "next_city": {
+        "name": "Next City",
+        "domains": ["nextcity.org", "www.nextcity.org"],
+        "rss_url": "https://nextcity.org/feeds/daily",
+        "tier": 2,
+        "region": "north_america",
+        "category": "urbanism",
+        "scrape_timeout": 20000,
+        "requires_user_agent": True,  # Has Cloudflare protection
+    },
+    "places_journal": {
+        "name": "Places Journal",
+        "domains": ["placesjournal.org", "www.placesjournal.org"],
+        "rss_url": "http://feeds.feedburner.com/PlacesJournal",
+        "tier": 2,
+        "region": "north_america",
+        "category": "critical_theory",
+        "scrape_timeout": 20000,
+    },
+    "planetizen": {
+        "name": "Planetizen",
+        "domains": ["planetizen.com", "www.planetizen.com"],
+        "rss_url": "https://www.planetizen.com/frontpage/feed",
+        "tier": 2,
+        "region": "north_america",
+        "category": "urbanism",
+        "scrape_timeout": 20000,
+    },
+
 
     # =========================================================================
     # TIER 2 - Europe
@@ -223,21 +261,24 @@ SOURCES = {
 # The following sources were removed due to feed issues:
 #
 # HTTP 403 (IP blocked - may work on Railway):
-#   - places_journal: https://placesjournal.org/feed/
-#   - landezine: http://www.landezine.com/feed
-#   - aasarchitecture: https://aasarchitecture.com/feed/
+#   - MOVE TO SCRAPING landezine: http://www.landezine.com/feed (EUROPE)
+#   - PUT ON HOLD - IMAGES BROKEN aasarchitecture: https://aasarchitecture.com/feed/
 #
 # HTTP 404 (Feed discontinued or URL changed):
-#   - architectural_record: https://www.architecturalrecord.com/rss/headlines
-#   - metropolis: https://metropolismag.com/feed/
-#   - metalocus: https://www.metalocus.es/en/feed
-#   - archiru: https://archi.ru/rss
-#   - archidatum: https://www.archidatum.com/feed/
-#   - planetizen: https://www.planetizen.com/rss/news
+#   - architectural_record: DIFFERENT FEED https://www.architecturalrecord.com/rss/topic/305
+#   - MOVE TO SCRAPING metropolis: https://metropolismag.com/projects/
+#   - MOVE TO SCRAPING metalocus: https://www.metalocus.es/en (EUROPE)
+#   - MOVE TO SCRAPING archiru: https://archi.ru/ (RUSSIA)
+#   - MOVE TO SCRAPING archidatum: https://www.archidatum.com/f (AFRICA)
+#   
 #
-# Malformed XML (genuinely broken feeds):
-#   - domus: https://www.domusweb.it/en.rss.xml
-#   - next_city: https://nextcity.org/rss
+#   - MOVE TO SCRAPING domus: https://www.domusweb.it/ (EUROPE)
+
+
+#   - CORRECTED FEED, DEFINITELY HAS CLOUDFLARE next_city: https://nextcity.org/feeds/daily (US, URBANISM)
+#   - CORRECTED FEED URL places_journal: http://feeds.feedburner.com/PlacesJournal
+# - CORRECTED FEED URL planetizen: https://www.planetizen.com/frontpage/feed (USA, URBANISM)
+
 # =============================================================================
 
 
