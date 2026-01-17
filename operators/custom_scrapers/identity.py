@@ -132,12 +132,173 @@ class IdentityScraper(BaseCustomScraper):
         print(f"[{self.source_id}] ✅ Extracted {len(headlines)} headlines from screenshot")
         return headlines
 
+    async def _find_headline_in_html_with_ai(self, page, headline: str) -> Optional[dict]:
+        """
+        Use AI to find the article link for a headline by analyzing HTML context.
+        
+        This is more reliable than regex because AI can understand:
+        - Similar but not exact text matches
+        - HTML structure and context
+        - Which links are article links vs navigation
+        
+        Args:
+            page: Playwright page object
+            headline: Headline text to search for
+            
+        Returns:
+            Dict with title, link, description, image or None
+        """
+        self._ensure_vision_model()
+        
+        # Extract relevant HTML context around potential article links
+        html_context = await page.evaluate("""
+            (headline) => {
+                // Find all article-like containers
+                const containers = document.querySelectorAll(
+                    'article, .post, [class*="post"], [class*="item"], [class*="card"], .each'
+                );
+                
+                const articleData = [];
+                
+                containers.forEach((container, index) => {
+                    // Get all links in this container
+                    const links = container.querySelectorAll('a[href]');
+                    
+                    if (links.length === 0) return;
+                    
+                    // Get the main link (usually the first or largest)
+                    let mainLink = null;
+                    let mainLinkText = '';
+                    
+                    links.forEach(link => {
+                        const text = link.textContent.trim();
+                        if (text.length > mainLinkText.length) {
+                            mainLink = link;
+                            mainLinkText = text;
+                        }
+                    });
+                    
+                    if (!mainLink) return;
+                    
+                    // Extract data
+                    const href = mainLink.href;
+                    const linkText = mainLinkText;
+                    
+                    // Get description
+                    const descEl = container.querySelector('p, .excerpt, [class*="excerpt"]');
+                    const description = descEl ? descEl.textContent.trim().substring(0, 150) : '';
+                    
+                    // Get image
+                    const imgEl = container.querySelector('img');
+                    const imageUrl = imgEl ? imgEl.src : null;
+                    
+                    // Only include if has meaningful text
+                    if (linkText.length > 5 && href.includes('/')) {
+                        articleData.push({
+                            index: index,
+                            link_text: linkText,
+                            href: href,
+                            description: description,
+                            image_url: imageUrl
+                        });
+                    }
+                });
+                
+                return articleData;
+            }
+        """, headline)
+        
+        if not html_context or len(html_context) == 0:
+            print(f"      ⚠️ No article containers found on page")
+            return None
+        
+        print(f"      🔍 Found {len(html_context)} potential article containers")
+        
+        # Use AI to find the best match
+        prompt = f"""You are analyzing HTML article links to find the one matching a specific headline.
+
+TARGET HEADLINE: "{headline}"
+
+AVAILABLE ARTICLE LINKS:
+{self._format_articles_for_ai(html_context)}
+
+Your task: Find which article link best matches the target headline.
+
+Rules:
+- Match based on semantic similarity, not exact text match
+- The link_text might be slightly different from the headline (capitalization, punctuation, shortened)
+- If multiple matches, choose the most similar one
+- If no good match exists, respond with "NONE"
+
+Respond with ONLY the index number (0, 1, 2, etc.) of the matching article, or "NONE" if no match.
+
+Example responses:
+3
+NONE
+0"""
+
+        try:
+            if not self.vision_model:
+                raise RuntimeError("Vision model not initialized")
+            
+            response = await asyncio.to_thread(
+                self.vision_model.invoke,
+                prompt
+            )
+            
+            response_text = response.content if hasattr(response, 'content') else str(response)
+            response_text = response_text.strip()
+            
+            # Parse AI response
+            if response_text.upper() == "NONE":
+                print(f"      ❌ AI: No matching article found")
+                return None
+            
+            try:
+                match_index = int(response_text)
+                
+                if match_index < 0 or match_index >= len(html_context):
+                    print(f"      ⚠️ AI returned invalid index: {match_index}")
+                    return None
+                
+                # Get the matched article
+                matched = html_context[match_index]
+                
+                print(f"      ✅ AI matched to: '{matched['link_text'][:50]}...'")
+                
+                return {
+                    "title": matched["link_text"],
+                    "link": matched["href"],
+                    "description": matched.get("description", ""),
+                    "image_url": matched.get("image_url")
+                }
+                
+            except ValueError:
+                print(f"      ⚠️ AI returned non-numeric response: {response_text}")
+                return None
+                
+        except Exception as e:
+            print(f"      ❌ AI analysis error: {e}")
+            return None
+    
+    def _format_articles_for_ai(self, articles: List[dict]) -> str:
+        """Format article data for AI prompt."""
+        lines = []
+        for i, article in enumerate(articles):
+            lines.append(f"[{i}] LINK_TEXT: {article['link_text']}")
+            lines.append(f"    URL: {article['href']}")
+            if article.get('description'):
+                lines.append(f"    EXCERPT: {article['description'][:100]}")
+            lines.append("")
+        
+        return "\n".join(lines)
+    
     async def _find_headline_in_html(self, page, headline: str) -> Optional[dict]:
         """
         Find a headline in the page HTML and extract its link.
-
-        Uses fuzzy text matching to find the headline even if formatting differs.
-
+        
+        Uses AI-powered HTML analysis for reliable matching.
+        
         Args:
             page: Playwright page object
             headline: Headline text to search for
@@ -145,50 +306,7 @@ class IdentityScraper(BaseCustomScraper):
         Returns:
             Dict with title, link, description, image or None
         """
-        # Clean headline for searching
-        search_text = headline.strip().lower()
-
-        result = await page.evaluate("""
-            (searchText) => {
-                // Find all links on the page
-                const allLinks = Array.from(document.querySelectorAll('a[href]'));
-
-                for (const link of allLinks) {
-                    const linkText = link.textContent.trim().toLowerCase();
-
-                    // Check if this link contains the headline text
-                    if (linkText.includes(searchText) || searchText.includes(linkText)) {
-                        // Extract associated data
-                        const href = link.href;
-
-                        // Try to find parent article/post container
-                        let container = link.closest('article, .post, [class*="post"], [class*="item"]') || link;
-
-                        // Get description
-                        const descEl = container.querySelector('p, .excerpt, .description');
-                        const description = descEl ? descEl.textContent.trim() : '';
-
-                        // Get image
-                        const imgEl = container.querySelector('img');
-                        const imageUrl = imgEl ? imgEl.src : null;
-
-                        // Get exact title from link
-                        const title = link.textContent.trim();
-
-                        return {
-                            title: title,
-                            link: href,
-                            description: description,
-                            image_url: imageUrl
-                        };
-                    }
-                }
-
-                return null;
-            }
-        """, search_text)
-
-        return result
+        return await self._find_headline_in_html_with_ai(page, headline)
 
     async def fetch_articles(self, hours: int = 24) -> List[dict]:
         """
