@@ -24,6 +24,7 @@ Usage:
 import re
 import asyncio
 import base64
+import os
 from typing import Optional, List, Any, cast
 from datetime import datetime, timezone
 
@@ -32,7 +33,51 @@ from langchain_core.messages import HumanMessage
 
 from operators.custom_scraper_base import BaseCustomScraper, custom_scraper_registry
 from storage.article_tracker import ArticleTracker
-from prompts.homepage_analyzer import HOMEPAGE_ANALYZER_PROMPT_TEMPLATE, parse_headlines
+
+
+def parse_headlines(response_text: str) -> list[str]:
+    """
+    Parse AI response into list of headlines.
+
+    Args:
+        response_text: Raw AI response (headlines separated by newlines)
+
+    Returns:
+        List of headline strings
+    """
+    lines = response_text.strip().split('\n')
+
+    headlines = []
+    for line in lines:
+        line = line.strip()
+        # Skip empty lines, numbered lists, explanations
+        if not line:
+            continue
+        if line.startswith('#'):
+            continue
+        if line.lower().startswith('here'):
+            continue
+        if line.lower().startswith("i'm unable"):
+            continue
+        if line.lower().startswith("i cannot"):
+            continue
+        if "screenshot" in line.lower() and len(line) > 100:
+            continue
+
+        # Remove numbered list markers (1. 2. etc)
+        if len(line) > 2 and line[0].isdigit() and '. ' in line[:4]:
+            line = line.split('. ', 1)[1].strip()
+
+        # Remove bullet points
+        if line.startswith('- '):
+            line = line[2:].strip()
+        if line.startswith('• '):
+            line = line[2:].strip()
+
+        if line and len(line) > 5:  # Minimum headline length
+            headlines.append(line)
+
+    return headlines[:20]  # Limit to 20
 
 
 class LandezineScraper(BaseCustomScraper):
@@ -64,20 +109,19 @@ class LandezineScraper(BaseCustomScraper):
     def _ensure_vision_model(self):
         """Ensure vision model is initialized."""
         if not self.vision_model:
-            import os
             api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY not set")
 
-            # Cast to str for type checker (we know it's not None after the check above)
-            api_key_str = cast(str, api_key)
-
+            # Use GPT-4o (not mini) for better vision capabilities
+            # GPT-4o-mini has limited vision and may fail on complex screenshots
             self.vision_model = ChatOpenAI(
-                model="gpt-4o-mini",
-                api_key=api_key_str,
-                temperature=0.1  # Low temperature for consistent extraction
+                model="gpt-4o",  # Changed from gpt-4o-mini
+                api_key=api_key,
+                temperature=0.1,  # Low temperature for consistent extraction
+                max_tokens=1000,  # Enough for headline list
             )
-            print(f"[{self.source_id}] Vision model initialized")
+            print(f"[{self.source_id}] Vision model initialized (gpt-4o)")
 
     async def _analyze_homepage_screenshot(self, screenshot_path: str) -> List[str]:
         """
@@ -91,23 +135,50 @@ class LandezineScraper(BaseCustomScraper):
         """
         self._ensure_vision_model()
 
-        print(f"[{self.source_id}] 🔍 Analyzing screenshot with AI vision...")
+        print(f"[{self.source_id}] Analyzing screenshot with AI vision...")
 
         # Read and encode screenshot
         with open(screenshot_path, 'rb') as f:
             image_data = base64.b64encode(f.read()).decode('utf-8')
 
-        # Create vision message
+        # Check file size
+        file_size = os.path.getsize(screenshot_path)
+        print(f"[{self.source_id}] Screenshot size: {file_size / 1024:.1f} KB")
+
+        # Create vision message with PROPER format
+        # The prompt is embedded directly in the message, not using template
+        prompt_text = """You are analyzing a homepage screenshot to extract article headlines.
+
+TASK: Extract all visible article headlines from this webpage screenshot.
+
+RULES:
+- Look for text that appears to be article headlines (larger font, prominent placement)
+- Ignore navigation menus, footer links, sidebar content, ads
+- Focus on the main content area where articles are listed
+- Return ONLY the headlines, one per line
+- Copy headlines EXACTLY as they appear - do not paraphrase
+- Return headlines in the order they appear (top to bottom)
+- Maximum 20 headlines
+- Do not include any explanation or commentary
+- Do not use emoji
+
+OUTPUT FORMAT:
+Just the headlines, one per line. Example:
+New Park Design in Amsterdam
+Sustainable Landscape Project Wins Award
+Interview with Studio XYZ"""
+
         message = HumanMessage(
             content=[
                 {
                     "type": "text",
-                    "text": HOMEPAGE_ANALYZER_PROMPT_TEMPLATE.format()
+                    "text": prompt_text
                 },
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:image/png;base64,{image_data}"
+                        "url": f"data:image/png;base64,{image_data}",
+                        "detail": "high"  # Use high detail for text extraction
                     }
                 }
             ]
@@ -117,20 +188,29 @@ class LandezineScraper(BaseCustomScraper):
         if not self.vision_model:
             raise RuntimeError("Vision model not initialized")
 
-        response = await asyncio.to_thread(
-            self.vision_model.invoke,
-            [message]
-        )
+        try:
+            response = await asyncio.to_thread(
+                self.vision_model.invoke,
+                [message]
+            )
 
-        # Parse headlines - ensure response.content is a string
-        response_text = response.content if hasattr(response, 'content') else str(response)
-        if not isinstance(response_text, str):
-            response_text = str(response_text)
+            # Parse headlines - ensure response.content is a string
+            response_text = response.content if hasattr(response, 'content') else str(response)
+            if not isinstance(response_text, str):
+                response_text = str(response_text)
 
-        headlines = parse_headlines(response_text)
+            print(f"[{self.source_id}] Raw AI response: {response_text[:200]}...")
 
-        print(f"[{self.source_id}] ✅ Extracted {len(headlines)} headlines from screenshot")
-        return headlines
+            headlines = parse_headlines(response_text)
+
+            print(f"[{self.source_id}] Extracted {len(headlines)} headlines from screenshot")
+            return headlines
+
+        except Exception as e:
+            print(f"[{self.source_id}] Vision API error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
 
     async def _find_headline_in_html(self, page, headline: str) -> Optional[dict]:
         """
@@ -150,37 +230,50 @@ class LandezineScraper(BaseCustomScraper):
 
         result = await page.evaluate("""
             (searchText) => {
+                // Normalize text for comparison
+                function normalize(text) {
+                    return text.trim().toLowerCase().replace(/\\s+/g, ' ');
+                }
+
                 // Find all links on the page
                 const allLinks = Array.from(document.querySelectorAll('a[href]'));
 
                 for (const link of allLinks) {
-                    const linkText = link.textContent.trim().toLowerCase();
+                    const linkText = normalize(link.textContent || '');
+                    const searchNormalized = normalize(searchText);
 
-                    // Check if this link contains the headline text
-                    if (linkText.includes(searchText) || searchText.includes(linkText)) {
-                        // Extract associated data
-                        const href = link.href;
+                    // Check if this link contains the headline text (or vice versa)
+                    if (linkText.includes(searchNormalized) || searchNormalized.includes(linkText)) {
+                        // Make sure it's a substantial match (not just a word)
+                        if (linkText.length > 10 || searchNormalized.length > 10) {
+                            const href = link.href;
 
-                        // Try to find parent article/post container
-                        let container = link.closest('article, .post, [class*="post"], [class*="item"]') || link;
+                            // Skip if not an article link
+                            if (href.includes('#') || href.includes('category') || href.includes('tag')) {
+                                continue;
+                            }
 
-                        // Get description
-                        const descEl = container.querySelector('p, .excerpt, .description');
-                        const description = descEl ? descEl.textContent.trim() : '';
+                            // Try to find parent article/post container
+                            let container = link.closest('article, .post, [class*="post"], [class*="item"]') || link;
 
-                        // Get image
-                        const imgEl = container.querySelector('img');
-                        const imageUrl = imgEl ? imgEl.src : null;
+                            // Get description
+                            const descEl = container.querySelector('p, .excerpt, .description');
+                            const description = descEl ? descEl.textContent.trim() : '';
 
-                        // Get exact title from link
-                        const title = link.textContent.trim();
+                            // Get image
+                            const imgEl = container.querySelector('img');
+                            const imageUrl = imgEl ? imgEl.src : null;
 
-                        return {
-                            title: title,
-                            link: href,
-                            description: description,
-                            image_url: imageUrl
-                        };
+                            // Get exact title from link
+                            const title = link.textContent.trim();
+
+                            return {
+                                title: title,
+                                link: href,
+                                description: description,
+                                image_url: imageUrl
+                            };
+                        }
                     }
                 }
 
@@ -219,7 +312,7 @@ class LandezineScraper(BaseCustomScraper):
         """
         # Maximum new articles to process per run
         max_new = 10
-        print(f"[{self.source_id}] 📸 Starting visual AI scraping...")
+        print(f"[{self.source_id}] Starting visual AI scraping...")
 
         await self._ensure_tracker()
 
@@ -232,15 +325,25 @@ class LandezineScraper(BaseCustomScraper):
                 # ============================================================
 
                 await page.goto(self.base_url, wait_until="domcontentloaded", timeout=self.timeout)
-                await page.wait_for_timeout(2000)  # Let page fully render
+                await page.wait_for_timeout(3000)  # Let page fully render (increased wait)
 
-                # Save screenshot
-                import os
+                # Scroll down slightly to trigger any lazy loading
+                await page.evaluate("window.scrollBy(0, 500)")
+                await page.wait_for_timeout(1000)
+                await page.evaluate("window.scrollTo(0, 0)")
+                await page.wait_for_timeout(500)
+
+                # Save screenshot with higher quality settings
                 import tempfile
                 screenshot_path = os.path.join(tempfile.gettempdir(), f"{self.source_id}_homepage.png")
 
-                await page.screenshot(path=screenshot_path, full_page=True)
-                print(f"[{self.source_id}] 📸 Screenshot saved: {screenshot_path}")
+                # Take screenshot of just viewport (not full page - more reliable)
+                await page.screenshot(
+                    path=screenshot_path,
+                    full_page=False,  # Just viewport, not full page
+                    type="png"
+                )
+                print(f"[{self.source_id}] Screenshot saved: {screenshot_path}")
 
                 # ============================================================
                 # Step 2: Extract Headlines with AI Vision
@@ -266,6 +369,8 @@ class LandezineScraper(BaseCustomScraper):
 
                 if not new_headlines:
                     print(f"[{self.source_id}] No new headlines (all previously seen)")
+                    # Still store headlines to update timestamps
+                    await self.tracker.store_headlines(self.source_id, current_headlines)
                     return []
 
                 # Limit to max_new
@@ -291,7 +396,7 @@ class LandezineScraper(BaseCustomScraper):
                         homepage_data = await self._find_headline_in_html(page, headline)
 
                         if not homepage_data:
-                            print(f"      ⚠️ Could not find link for headline")
+                            print("      Could not find link for headline")
                             skipped_no_link += 1
                             continue
 
@@ -357,14 +462,14 @@ class LandezineScraper(BaseCustomScraper):
 
                             # Skip if older than configured max age
                             if days_old > self.MAX_ARTICLE_AGE_DAYS:
-                                print(f"      ⏭️  Skipping old article ({days_old} days old)")
+                                print(f"      Skipping old article ({days_old} days old)")
                                 skipped_old += 1
                                 continue
 
-                            print(f"      ✅ Fresh article ({days_old} day(s) old)")
+                            print(f"      Fresh article ({days_old} day(s) old)")
                         else:
                             # If no date found, include it (better to include than miss)
-                            print(f"      ⚠️  No date found - including anyway")
+                            print(f"      No date found - including anyway")
 
                         # Build hero image
                         hero_image = None
@@ -413,7 +518,7 @@ class LandezineScraper(BaseCustomScraper):
                         await page.wait_for_timeout(1000)
 
                     except Exception as e:
-                        print(f"      ⚠️ Error processing headline: {e}")
+                        print(f"      Error processing headline: {e}")
                         continue
 
                 # ============================================================
@@ -430,12 +535,12 @@ class LandezineScraper(BaseCustomScraper):
                 # Final Summary
                 # ============================================================
 
-                print(f"\n[{self.source_id}] 📊 Processing Summary:")
+                print(f"\n[{self.source_id}] Processing Summary:")
                 print(f"   Headlines extracted: {len(current_headlines)}")
                 print(f"   New headlines: {len(new_headlines)}")
                 print(f"   Skipped (too old): {skipped_old}")
                 print(f"   Skipped (no link): {skipped_no_link}")
-                print(f"   ✅ Successfully scraped: {len(new_articles)}")
+                print(f"   Successfully scraped: {len(new_articles)}")
 
                 return new_articles
 
@@ -479,7 +584,7 @@ async def test_landezine_scraper():
         connected = await scraper.test_connection()
 
         if not connected:
-            print("   ❌ Connection failed")
+            print("   Connection failed")
             return
 
         # Show tracker stats
@@ -487,7 +592,7 @@ async def test_landezine_scraper():
         await scraper._ensure_tracker()
 
         if not scraper.tracker:
-            print("   ⚠️ Tracker not initialized")
+            print("   Tracker not initialized")
             return
 
         stats = await scraper.tracker.get_stats(source_id="landezine")
@@ -499,10 +604,10 @@ async def test_landezine_scraper():
             print(f"   Newest: {stats['newest_seen']}")
 
         # Fetch new articles
-        print("\n3. Running visual AI scraping (max 5 new articles)...")
-        articles = await scraper.fetch_articles(hours=24)  # hours parameter ignored, uses max_new=10 internally
+        print("\n3. Running visual AI scraping...")
+        articles = await scraper.fetch_articles(hours=24)
 
-        print(f"\n   ✅ Found {len(articles)} NEW articles")
+        print(f"\n   Found {len(articles)} NEW articles")
 
         # Display articles
         if articles:
@@ -520,7 +625,7 @@ async def test_landezine_scraper():
         # Show updated stats
         print("\n5. Updated tracker stats...")
         if not scraper.tracker:
-            print("   ⚠️ Tracker not initialized")
+            print("   Tracker not initialized")
             return
 
         stats = await scraper.tracker.get_stats(source_id="landezine")
@@ -535,5 +640,4 @@ async def test_landezine_scraper():
 
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(test_landezine_scraper())
