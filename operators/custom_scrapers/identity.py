@@ -134,149 +134,127 @@ class IdentityScraper(BaseCustomScraper):
 
     async def _find_headline_in_html_with_ai(self, page, headline: str) -> Optional[dict]:
         """
-        Use AI to find the article link for a headline by analyzing HTML context.
-        
-        This is more reliable than regex because AI can understand:
-        - Similar but not exact text matches
-        - HTML structure and context
-        - Which links are article links vs navigation
-        
+        Find a headline in the page HTML using AI-powered matching.
+
+        Strategy:
+        1. Extract ALL meaningful links from the page (minimal filtering)
+        2. Send them all to AI with context
+        3. Let AI figure out which one matches the headline
+
         Args:
             page: Playwright page object
             headline: Headline text to search for
-            
+
         Returns:
             Dict with title, link, description, image or None
         """
         self._ensure_vision_model()
-        
-        # Extract relevant HTML context around potential article links
+
+        # Extract all potentially relevant links - let AI do the filtering
         html_context = await page.evaluate("""
-            (headline) => {
-                // Find all article-like containers
-                const containers = document.querySelectorAll(
-                    'article, .post, [class*="post"], [class*="item"], [class*="card"], .each'
-                );
-                
-                const articleData = [];
-                
-                containers.forEach((container, index) => {
-                    // Get all links in this container
-                    const links = container.querySelectorAll('a[href]');
-                    
-                    if (links.length === 0) return;
-                    
-                    // Get the main link (usually the first or largest)
-                    let mainLink = null;
-                    let mainLinkText = '';
-                    
-                    links.forEach(link => {
-                        const text = link.textContent.trim();
-                        if (text.length > mainLinkText.length) {
-                            mainLink = link;
-                            mainLinkText = text;
-                        }
-                    });
-                    
-                    if (!mainLink) return;
-                    
-                    // Extract data
-                    const href = mainLink.href;
-                    const linkText = mainLinkText;
-                    
-                    // Get description
-                    const descEl = container.querySelector('p, .excerpt, [class*="excerpt"]');
-                    const description = descEl ? descEl.textContent.trim().substring(0, 150) : '';
-                    
-                    // Get image
-                    const imgEl = container.querySelector('img');
-                    const imageUrl = imgEl ? imgEl.src : null;
-                    
-                    // Only include if has meaningful text
-                    if (linkText.length > 5 && href.includes('/')) {
-                        articleData.push({
-                            index: index,
-                            link_text: linkText,
+            () => {
+                const allLinks = document.querySelectorAll('a[href]');
+                const linkData = [];
+                const seenUrls = new Set(); // Avoid duplicates
+
+                allLinks.forEach((link, index) => {
+                    const text = link.textContent.trim();
+                    const href = link.href;
+
+                    // Only basic filtering: has text, has valid URL, not duplicate
+                    if (text.length > 5 && href && href.startsWith('http') && !seenUrls.has(href)) {
+                        seenUrls.add(href);
+
+                        // Try to get nearby context (description, image)
+                        const container = link.closest('article, .post, [class*="post"], [class*="item"], div');
+                        const descEl = container ? container.querySelector('p, .excerpt, [class*="excerpt"]') : null;
+                        const description = descEl ? descEl.textContent.trim().substring(0, 150) : '';
+
+                        const imgEl = container ? container.querySelector('img') : null;
+                        const imageUrl = imgEl ? imgEl.src : null;
+
+                        linkData.push({
+                            link_text: text,
                             href: href,
                             description: description,
                             image_url: imageUrl
                         });
                     }
                 });
-                
-                return articleData;
+
+                return linkData;
             }
-        """, headline)
-        
+        """)
+
         if not html_context or len(html_context) == 0:
-            print(f"      ⚠️ No article containers found on page")
+            print(f"      ⚠️ No links found on page")
             return None
-        
-        print(f"      🔍 Found {len(html_context)} potential article containers")
-        
-        # Use AI to find the best match
-        prompt = f"""You are analyzing HTML article links to find the one matching a specific headline.
 
-TARGET HEADLINE: "{headline}"
+        print(f"      🔍 Found {len(html_context)} links on page")
 
-AVAILABLE ARTICLE LINKS:
-{self._format_articles_for_ai(html_context)}
+        # Enhanced AI prompt that helps it distinguish article links
+        prompt = f"""You are analyzing links from a web page to find the one matching a specific article headline.
 
-Your task: Find which article link best matches the target headline.
+    TARGET HEADLINE: "{headline}"
 
-Rules:
-- Match based on semantic similarity, not exact text match
-- The link_text might be slightly different from the headline (capitalization, punctuation, shortened)
-- If multiple matches, choose the most similar one
-- If no good match exists, respond with "NONE"
+    ALL LINKS ON PAGE:
+    {self._format_articles_for_ai(html_context)}
 
-Respond with ONLY the index number (0, 1, 2, etc.) of the matching article, or "NONE" if no match.
+    Your task: Find which link is the article matching the target headline.
 
-Example responses:
-3
-NONE
-0"""
+    Context to help you:
+    - Article links usually have longer, descriptive text (not "Read more", "Share", "Home", etc.)
+    - Article links point to individual article URLs (not /category/, /tag/, /author/, homepage)
+    - The link_text might be slightly different from headline (capitalization, punctuation, shortened)
+    - Navigation and footer links will be mixed in - ignore those
+
+    Respond with ONLY the index number (0, 1, 2, etc.) of the matching article link, or "NONE" if no match exists.
+
+    Example responses:
+    15
+    NONE
+    3"""
 
         try:
             if not self.vision_model:
                 raise RuntimeError("Vision model not initialized")
-            
+
             response = await asyncio.to_thread(
                 self.vision_model.invoke,
                 prompt
             )
-            
+
             response_text = response.content if hasattr(response, 'content') else str(response)
             response_text = response_text.strip()
-            
+
             # Parse AI response
             if response_text.upper() == "NONE":
                 print(f"      ❌ AI: No matching article found")
                 return None
-            
+
             try:
                 match_index = int(response_text)
-                
+
                 if match_index < 0 or match_index >= len(html_context):
                     print(f"      ⚠️ AI returned invalid index: {match_index}")
                     return None
-                
+
                 # Get the matched article
                 matched = html_context[match_index]
-                
+
                 print(f"      ✅ AI matched to: '{matched['link_text'][:50]}...'")
-                
+
                 return {
                     "title": matched["link_text"],
                     "link": matched["href"],
                     "description": matched.get("description", ""),
                     "image_url": matched.get("image_url")
                 }
-                
+
             except ValueError:
                 print(f"      ⚠️ AI returned non-numeric response: {response_text}")
                 return None
-                
+
         except Exception as e:
             print(f"      ❌ AI analysis error: {e}")
             return None

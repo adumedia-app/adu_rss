@@ -172,14 +172,6 @@ SOURCES = {
         "category": "russia",
         "scrape_timeout": 20000,
     },
-    "landezine": {
-        "name": "Landezine",
-        "domains": ["landezine.com", "www.landezine.com"],
-        "tier": 2,
-        "region": "europe",
-        "category": "landscape",
-        "scrape_timeout": 30000,
-    },
 
     # =========================================================================
     # TIER 2 - Asia-Pacific
@@ -277,7 +269,6 @@ SOURCES = {
 # The following sources were removed due to feed issues:
 #
 # HTTP 403 (IP blocked - may work on Railway):
-#   - MOVE TO SCRAPING landezine: http://www.landezine.com/feed (EUROPE)
 #   - ADD WITH SCRAPING (instead of spoon tamago) https://www.japan-architects.com/en
 #   - ADD WITH SCRAPING https://www.indesignlive.com/ (AUSTRALIA)
 #   - PUT ON HOLD - IMAGES BROKEN aasarchitecture: https://aasarchitecture.com/feed/

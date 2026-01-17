@@ -14,7 +14,6 @@ Usage:
     
     fetcher = UnifiedFetcher()
     articles = await fetcher.fetch_source("archdaily", hours=24)  # RSS
-    articles = await fetcher.fetch_source("landezine", hours=24)  # Custom scraper
     
     # Or fetch all sources
     all_articles = await fetcher.fetch_all_sources(hours=24)

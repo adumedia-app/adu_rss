@@ -74,7 +74,6 @@ SOURCES_TO_TEST = [
 CANDIDATE_SOURCES = [
     # HTTP 403 on Replit (IP blocked - may work on Railway)
     ("places_journal", "https://placesjournal.org/feed/", "Places Journal", 2),
-    ("landezine", "http://www.landezine.com/feed", "Landezine", 2),
     ("aasarchitecture", "https://aasarchitecture.com/feed/", "A As Architecture", 2),
 
     # HTTP 404 / Discontinued (keeping for occasional re-check)

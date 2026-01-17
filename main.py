@@ -60,7 +60,6 @@ from config.sources import (
 )
 
 # TEMP: Testing custom scrapers
-from operators.custom_scrapers.landezine import LandezineScraper
 from operators.custom_scrapers.identity import IdentityScraper
 
 # Default configuration
@@ -385,9 +384,9 @@ async def run_pipeline(
     #    else:
     #        print(f"⚠️ Skipping {sid}: no RSS URL configured")
 
-    # TEMP: Force landezine for custom scraper test
-    valid_sources = ["landezine", "identity"]
-    print("⚠️ TEMP: Testing custom scrapers - forcing landezine + identity")
+    # TEMP: Force for custom scraper test
+    valid_sources = ["identity"]
+    print("⚠️ TEMP: Testing custom scrapers - forcing identity")
 
 
     if not valid_sources:
@@ -432,24 +431,6 @@ async def run_pipeline(
         print("\n📡 Step 1: TEMP - Testing custom scrapers...")
 
         all_articles = []
-
-        # Landezine scraper
-        print("\n[1/2] Landezine...")
-        landezine_scraper = LandezineScraper()
-        try:
-            landezine_articles = await landezine_scraper.fetch_articles(hours=hours)
-            # Ensure correct format
-            for article in landezine_articles:
-                if "source_id" not in article:
-                    article["source_id"] = "landezine"
-                if "source_name" not in article:
-                    article["source_name"] = "Landezine"
-            all_articles.extend(landezine_articles)
-            print(f"   ✅ Landezine: {len(landezine_articles)} articles")
-        except Exception as e:
-            print(f"   ❌ Landezine failed: {e}")
-        finally:
-            await landezine_scraper.close()
 
         # Identity scraper
         print("\n[2/2] Identity Magazine...")
