@@ -57,10 +57,18 @@ from config.sources import (
     get_source_config,
     get_source_ids_by_tier,
     get_all_source_ids,
+    get_custom_scraper_ids,
+    is_custom_scraper,
+    get_all_active_source_ids,
 )
 
-# TEMP: Testing custom scrapers
+# Import custom scrapers
+from operators.custom_scrapers.landezine import LandezineScraper
 from operators.custom_scrapers.identity import IdentityScraper
+from operators.custom_scrapers.archiposition import ArchipositionScraper
+from operators.custom_scrapers.prorus import ProRusScraper
+from operators.custom_scrapers.bauwelt import BauweltScraper
+from operators.custom_scrapers.gooood import GoooodScraper
 
 # Default configuration
 DEFAULT_HOURS_LOOKBACK = 24
@@ -195,7 +203,7 @@ def filter_articles(articles: list[dict], llm, prompt_template) -> tuple[list[di
     # Print summary
     total = len(included) + len(excluded)
     include_rate = (len(included) / total * 100) if total > 0 else 0
-    print(f"\n   📊 Filter Summary:")
+    print("\n   📊 Filter Summary:")
     print(f"      Included: {len(included)} ({include_rate:.1f}%)")
     print(f"      Excluded: {len(excluded)}")
 
@@ -426,29 +434,74 @@ async def run_pipeline(
         # )
 
         # =================================================================
-        # Step 1: Fetch Articles (TEMP: Custom Scrapers)
+        # Step 1: Fetch Articles (RSS + Custom Scrapers)
         # =================================================================
-        print("\n📡 Step 1: TEMP - Testing custom scrapers...")
+        print("\n📡 Step 1: Fetching articles...")
 
         all_articles = []
 
-        # Identity scraper
-        print("\n[2/2] Identity Magazine...")
-        identity_scraper = IdentityScraper()
-        try:
-            identity_articles = await identity_scraper.fetch_articles(hours=hours)
-            # Ensure correct format
-            for article in identity_articles:
-                if "source_id" not in article:
-                    article["source_id"] = "identity"
-                if "source_name" not in article:
-                    article["source_name"] = "Identity Magazine"
-            all_articles.extend(identity_articles)
-            print(f"   ✅ Identity: {len(identity_articles)} articles")
-        except Exception as e:
-            print(f"   ❌ Identity failed: {e}")
-        finally:
-            await identity_scraper.close()
+        # Map of custom scraper instances
+        CUSTOM_SCRAPER_MAP = {
+            "landezine": LandezineScraper,
+            "identity": IdentityScraper,
+            "archiposition": ArchipositionScraper,
+            "prorus": ProRusScraper,
+            "bauwelt": BauweltScraper,
+            "gooood": GoooodScraper,
+        }
+
+        # Separate RSS sources from custom scrapers
+        rss_sources = [s for s in valid_sources if not is_custom_scraper(s)]
+        custom_sources = [s for s in valid_sources if is_custom_scraper(s)]
+
+        # Fetch from RSS sources
+        if rss_sources:
+            print(f"\n📰 Fetching {len(rss_sources)} RSS sources...")
+            fetcher = RSSFetcher()
+            rss_articles = fetcher.fetch_all_sources(
+                hours=hours,
+                source_ids=rss_sources
+            )
+            all_articles.extend(rss_articles)
+            print(f"   ✅ RSS: {len(rss_articles)} articles")
+
+        # Fetch from custom scrapers
+        if custom_sources:
+            print(f"\n🤖 Running {len(custom_sources)} custom scrapers...")
+
+            for i, source_id in enumerate(custom_sources, 1):
+                scraper_class = CUSTOM_SCRAPER_MAP.get(source_id)
+
+                if not scraper_class:
+                    print(f"   [{i}/{len(custom_sources)}] ⚠️  {source_id}: No scraper class found")
+                    continue
+
+                print(f"\n[{i}/{len(custom_sources)}] {source_id}...")
+                scraper_instance = scraper_class()
+
+                try:
+                    scraper_articles = await scraper_instance.fetch_articles(hours=hours)
+
+                    # Ensure correct format
+                    config = get_source_config(source_id)
+                    source_name = config.get("name", source_id) if config else source_id
+
+                    for article in scraper_articles:
+                        if "source_id" not in article:
+                            article["source_id"] = source_id
+                        if "source_name" not in article:
+                            article["source_name"] = source_name
+
+                    all_articles.extend(scraper_articles)
+                    print(f"   ✅ {source_id}: {len(scraper_articles)} articles")
+
+                except Exception as e:
+                    print(f"   ❌ {source_id} failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                finally:
+                    await scraper_instance.close()
 
         articles = all_articles
 
@@ -612,7 +665,7 @@ def parse_args():
         "--sources",
         nargs="+",
         default=None,
-        help=f"Sources to fetch (default: all {len(get_all_source_ids())} sources)"
+        help="Sources to fetch (default: all RSS + custom scrapers)"
     )
 
     parser.add_argument(

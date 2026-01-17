@@ -172,6 +172,14 @@ SOURCES = {
         "category": "russia",
         "scrape_timeout": 20000,
     },
+    "landezine": {
+        "name": "Landezine",
+        "domains": ["landezine.com", "www.landezine.com"],
+        "tier": 2,
+        "region": "europe",
+        "category": "landscape",
+        "scrape_timeout": 30000,
+    },
 
     # =========================================================================
     # TIER 2 - Asia-Pacific
@@ -255,11 +263,53 @@ SOURCES = {
     "identity": {
         "id": "identity",
         "name": "Identity Magazine",
-        "domains": ["identity.ae", "www.identity.ae"],  # Add this line!
+        "domains": ["identity.ae", "www.identity.ae"],
         "tier": 2,
         "region": "middle_east",
-        "custom_scraper": True,  # Uses visual scraper
-    }
+        "custom_scraper": True,  # Uses visual AI scraper
+    },
+
+    # =========================================================================
+    # TIER 2 - Asia (Custom Scrapers)
+    # =========================================================================
+
+    "archiposition": {
+        "id": "archiposition",
+        "name": "Archiposition",
+        "domains": ["archiposition.com", "www.archiposition.com"],
+        "tier": 2,
+        "region": "asia_pacific",
+        "custom_scraper": True,  # Uses visual AI scraper + cloudscraper for 403
+    },
+    "gooood": {
+        "id": "gooood",
+        "name": "Gooood",
+        "domains": ["gooood.cn", "www.gooood.cn"],
+        "tier": 2,
+        "region": "asia_pacific",
+        "custom_scraper": True,  # Uses visual AI scraper
+    },
+
+    # =========================================================================
+    # TIER 2 - Europe (Custom Scrapers)
+    # =========================================================================
+
+    "prorus": {
+        "id": "prorus",
+        "name": "ProRus",
+        "domains": ["prorus.ru", "www.prorus.ru"],
+        "tier": 2,
+        "region": "europe",
+        "custom_scraper": True,  # Uses visual AI scraper
+    },
+    "bauwelt": {
+        "id": "bauwelt",
+        "name": "Bauwelt",
+        "domains": ["bauwelt.de", "www.bauwelt.de"],
+        "tier": 2,
+        "region": "europe",
+        "custom_scraper": True,  # Uses visual AI scraper
+    },
 }
 
 
@@ -269,6 +319,7 @@ SOURCES = {
 # The following sources were removed due to feed issues:
 #
 # HTTP 403 (IP blocked - may work on Railway):
+#   - MOVE TO SCRAPING landezine: http://www.landezine.com/feed (EUROPE)
 #   - ADD WITH SCRAPING (instead of spoon tamago) https://www.japan-architects.com/en
 #   - ADD WITH SCRAPING https://www.indesignlive.com/ (AUSTRALIA)
 #   - PUT ON HOLD - IMAGES BROKEN aasarchitecture: https://aasarchitecture.com/feed/
@@ -401,10 +452,31 @@ def get_all_source_ids() -> list[str]:
         if config.get("rss_url")
     ]
 
+def get_custom_scraper_ids() -> list[str]:
+    """Get all source IDs that use custom scrapers."""
+    return [
+        source_id for source_id, config in SOURCES.items()
+        if config.get("custom_scraper")
+    ]
+
+def get_all_active_source_ids() -> list[str]:
+    """Get all source IDs (both RSS and custom scrapers)."""
+    return [
+        source_id for source_id, config in SOURCES.items()
+        if config.get("rss_url") or config.get("custom_scraper")
+    ]
+
+def is_custom_scraper(source_id: str) -> bool:
+    """Check if a source uses custom scraper."""
+    config = SOURCES.get(source_id, {})
+    return config.get("custom_scraper", False)
+
 def get_source_stats() -> dict:
     """Get statistics about configured sources."""
     stats = {
         "total": len(SOURCES),
+        "rss_sources": len([s for s in SOURCES.values() if s.get("rss_url")]),
+        "custom_scrapers": len([s for s in SOURCES.values() if s.get("custom_scraper")]),
         "by_tier": {},
         "by_region": {},
     }
@@ -430,6 +502,8 @@ if __name__ == "__main__":
 
     stats = get_source_stats()
     print(f"\nTotal sources: {stats['total']}")
+    print(f"  RSS sources: {stats['rss_sources']}")
+    print(f"  Custom scrapers: {stats['custom_scrapers']}")
 
     print("\nBy Tier:")
     for tier, count in sorted(stats["by_tier"].items()):
@@ -439,6 +513,11 @@ if __name__ == "__main__":
     for region, count in sorted(stats["by_region"].items()):
         print(f"  {region}: {count}")
 
-    print("\nAll Sources:")
+    print("\nRSS Sources:")
     for source in get_all_rss_sources():
         print(f"  {source['id']:25} [{source['tier']}] {source['name']}")
+
+    print("\nCustom Scrapers:")
+    for source_id in get_custom_scraper_ids():
+        config = SOURCES[source_id]
+        print(f"  {source_id:25} [{config['tier']}] {config['name']}")
