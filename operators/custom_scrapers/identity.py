@@ -50,7 +50,7 @@ class IdentityScraper(BaseCustomScraper):
         super().__init__()
         self.tracker: Optional[ArticleTracker] = None
         self.vision_model: Optional[ChatOpenAI] = None
-        self.stats = ScrapingStats(source_id=self.source_id)
+        self.stats = ScrapingStats(source_id=self.source_id, source_name=self.source_name, base_url=self.base_url)
 
     async def _ensure_tracker(self):
         """Ensure article tracker is connected."""
