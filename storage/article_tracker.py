@@ -2,20 +2,16 @@
 """
 Article Tracker - PostgreSQL Database for Custom Scrapers
 
-Tracks seen article URLs and headlines to prevent reprocessing.
-Supports visual scraping workflow where headlines are extracted via AI.
+Tracks seen article URLs to prevent reprocessing.
+Simple URL-based tracking: store URLs when discovered, filter against them next run.
 
 Database Schema:
-    - articles table: stores seen URLs and headlines per source
+    - articles table: stores seen URLs per source
     - Indexed by source_id and url for fast lookups
 
 Usage:
     tracker = ArticleTracker()
     await tracker.connect()
-
-    # Visual scraping workflow
-    await tracker.store_headlines(source_id, headlines_list)
-    stored_headlines = await tracker.get_stored_headlines(source_id)
 
     # URL tracking workflow  
     new_urls = await tracker.filter_new_articles(source_id, url_list)
@@ -25,16 +21,15 @@ Usage:
 import os
 import asyncpg
 from typing import Optional, List
-from datetime import datetime
 
 
 class ArticleTracker:
-    """PostgreSQL-based article tracking for custom scrapers."""
+    """PostgreSQL-based article URL tracking for custom scrapers."""
 
     # ========================================
     # TEST MODE - Set to True to ignore "seen" status
     # This makes all articles appear as "new" for testing
-    # REMOVE OR SET TO FALSE FOR PRODUCTION
+    # Set via environment variable: SCRAPER_TEST_MODE=true
     # ========================================
     TEST_MODE = os.getenv("SCRAPER_TEST_MODE", "").lower() == "true"
 
@@ -68,6 +63,10 @@ class ArticleTracker:
         # Initialize schema
         await self._init_schema()
 
+        # Show mode status
+        if self.TEST_MODE:
+            print("⚠️  Article tracker TEST MODE ENABLED - all articles will appear as 'new'")
+
         print("✅ Article tracker connected to PostgreSQL")
 
     async def _init_schema(self):
@@ -81,7 +80,6 @@ class ArticleTracker:
                     id SERIAL PRIMARY KEY,
                     source_id VARCHAR(100) NOT NULL,
                     url TEXT NOT NULL,
-                    headline TEXT,
                     first_seen TIMESTAMP DEFAULT NOW(),
                     last_checked TIMESTAMP DEFAULT NOW(),
                     UNIQUE(source_id, url)
@@ -94,179 +92,25 @@ class ArticleTracker:
                 ON articles(source_id, url)
             """)
 
-            # Create index for headline searches
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_articles_source_headline 
-                ON articles(source_id, headline)
-            """)
-
         print("✅ Article tracker schema initialized")
 
     # =========================================================================
-    # Visual Scraping - Headline Storage
-    # =========================================================================
-
-    async def store_headlines(self, source_id: str, headlines: List[str]) -> int:
-        """
-        Store headlines from first visual analysis run.
-
-        This is used on first run to mark all visible headlines as "seen"
-        so subsequent runs only process new headlines.
-
-        Args:
-            source_id: Source identifier
-            headlines: List of headline strings
-
-        Returns:
-            Number of headlines stored
-        """
-        if not self.pool:
-            raise RuntimeError("Not connected to database")
-
-        stored = 0
-
-        async with self.pool.acquire() as conn:
-            for headline in headlines:
-                if not headline or not headline.strip():
-                    continue
-
-                try:
-                    # Use headline as URL placeholder for now
-                    # Will be updated when we find the actual URL
-                    await conn.execute("""
-                        INSERT INTO articles (source_id, url, headline)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT (source_id, url) DO NOTHING
-                    """, source_id, f"headline:{headline}", headline.strip())
-
-                    stored += 1
-
-                except Exception as e:
-                    print(f"   ⚠️ Error storing headline: {e}")
-                    continue
-
-        print(f"[{source_id}] Stored {stored} headlines in database")
-        return stored
-
-
-    async def get_stored_headlines(self, source_id: str) -> List[str]:
-        """
-        Get all stored headlines for a source.
-        ...
-        """
-        if not self.pool:
-            raise RuntimeError("Not connected to database")
-
-        # ========================================
-        # TEST MODE BYPASS - Remove for production
-        # ========================================
-        if self.TEST_MODE:
-            print("   ⚠️ TEST MODE: Returning empty list (pretending no headlines seen)")
-            return []
-
-        async with self.pool.acquire() as conn:
-
-            rows = await conn.fetch("""
-                SELECT headline FROM articles
-                WHERE source_id = $1 AND headline IS NOT NULL
-                ORDER BY first_seen DESC
-            """, source_id)
-
-            return [row['headline'] for row in rows if row['headline']]
-
-    async def find_new_headlines(self, source_id: str, current_headlines: List[str]) -> List[str]:
-        """
-        Find headlines that haven't been seen before.
-
-        Uses fuzzy matching to handle slight variations in headline text.
-
-        Args:
-            source_id: Source identifier
-            current_headlines: List of headlines currently on the page
-
-        Returns:
-            List of headlines not in database
-        """
-        if not self.pool:
-            raise RuntimeError("Not connected to database")
-
-        stored_headlines = await self.get_stored_headlines(source_id)
-
-        # Simple exact match for now
-        # TODO: Could add fuzzy matching later if needed
-        stored_set = set(h.strip().lower() for h in stored_headlines)
-
-        new_headlines = [
-            h for h in current_headlines
-            if h.strip().lower() not in stored_set
-        ]
-
-        return new_headlines
-
-    async def update_headline_url(self, source_id: str, headline: str, url: str) -> bool:
-        """
-        Update a headline entry with its actual URL.
-
-        Called after finding the link for a headline in HTML.
-
-        Args:
-            source_id: Source identifier
-            headline: Article headline
-            url: Actual article URL
-
-        Returns:
-            True if updated successfully
-        """
-        if not self.pool:
-            raise RuntimeError("Not connected to database")
-
-        async with self.pool.acquire() as conn:
-            try:
-                # Check if URL already exists
-                existing = await conn.fetchval("""
-                    SELECT id FROM articles
-                    WHERE source_id = $1 AND url = $2
-                """, source_id, url)
-
-                if existing:
-                    # URL already tracked, just update last_checked
-                    await conn.execute("""
-                        UPDATE articles
-                        SET last_checked = NOW()
-                        WHERE source_id = $1 AND url = $2
-                    """, source_id, url)
-                    return True
-
-                # Update the placeholder entry
-                result = await conn.execute("""
-                    UPDATE articles
-                    SET url = $1, last_checked = NOW()
-                    WHERE source_id = $2 AND headline = $3 AND url LIKE 'headline:%'
-                """, url, source_id, headline)
-
-                # If no placeholder found, insert new entry
-                if result == "UPDATE 0":
-                    await conn.execute("""
-                        INSERT INTO articles (source_id, url, headline)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT (source_id, url) DO UPDATE
-                        SET headline = EXCLUDED.headline, last_checked = NOW()
-                    """, source_id, url, headline)
-
-                return True
-
-            except Exception as e:
-                print(f"   ⚠️ Error updating headline URL: {e}")
-                return False
-
-    # =========================================================================
-    # URL Tracking (Traditional Method)
+    # URL Tracking - Core Methods
     # =========================================================================
 
     async def filter_new_articles(self, source_id: str, urls: List[str]) -> List[str]:
         """
         Filter list of URLs to only those not seen before.
-        ...
+
+        This is the main method for detecting new articles.
+        Respects TEST_MODE: when enabled, returns all URLs as "new".
+
+        Args:
+            source_id: Source identifier (e.g., 'bauwelt')
+            urls: List of article URLs found on homepage
+
+        Returns:
+            List of URLs not previously seen (new articles)
         """
         if not self.pool:
             raise RuntimeError("Not connected to database")
@@ -274,16 +118,13 @@ class ArticleTracker:
         if not urls:
             return []
 
-        # ========================================
-        # TEST MODE BYPASS - Remove for production
-        # ========================================
+        # TEST MODE: Return all URLs as "new" for testing
         if self.TEST_MODE:
-            print(f"   ⚠️ TEST MODE: Returning ALL {len(urls)} URLs as 'new' (ignoring database)")
+            print(f"   ⚠️  TEST MODE: Returning ALL {len(urls)} URLs as 'new'")
             return urls
 
-
         async with self.pool.acquire() as conn:
-            # Get all existing URLs for this source
+            # Get all existing URLs for this source (batch lookup)
             rows = await conn.fetch("""
                 SELECT url FROM articles
                 WHERE source_id = $1 AND url = ANY($2)
@@ -294,15 +135,20 @@ class ArticleTracker:
             # Return URLs not in database
             new_urls = [url for url in urls if url not in seen_urls]
 
+            print(f"   Database: {len(seen_urls)} seen, {len(new_urls)} new")
+
             return new_urls
 
     async def mark_as_seen(self, source_id: str, urls: List[str]) -> int:
         """
         Mark URLs as seen in the database.
 
+        Call this after discovering URLs on homepage to track them
+        for future runs.
+
         Args:
             source_id: Source identifier
-            urls: List of article URLs
+            urls: List of article URLs to mark as seen
 
         Returns:
             Number of URLs marked as seen
@@ -328,10 +174,39 @@ class ArticleTracker:
                     marked += 1
 
                 except Exception as e:
-                    print(f"   ⚠️ Error marking URL as seen: {e}")
+                    print(f"   ⚠️  Error marking URL as seen: {e}")
                     continue
 
+        print(f"   Marked {marked} URLs as seen in database")
         return marked
+
+    async def is_seen(self, source_id: str, url: str) -> bool:
+        """
+        Check if a single URL has been seen before.
+
+        Args:
+            source_id: Source identifier
+            url: Article URL to check
+
+        Returns:
+            True if URL exists in database
+        """
+        if not self.pool:
+            raise RuntimeError("Not connected to database")
+
+        # TEST MODE: Always return False (not seen)
+        if self.TEST_MODE:
+            return False
+
+        async with self.pool.acquire() as conn:
+            exists = await conn.fetchval("""
+                SELECT EXISTS(
+                    SELECT 1 FROM articles
+                    WHERE source_id = $1 AND url = $2
+                )
+            """, source_id, url)
+
+            return bool(exists)
 
     # =========================================================================
     # Statistics
@@ -342,7 +217,7 @@ class ArticleTracker:
         Get statistics about tracked articles.
 
         Args:
-            source_id: Optional source to filter by
+            source_id: Optional source to filter by (None = all sources)
 
         Returns:
             Dict with statistics
@@ -384,9 +259,34 @@ class ArticleTracker:
                 "newest_seen": newest.isoformat() if newest else None,
             }
 
+    async def get_source_counts(self) -> dict:
+        """
+        Get article counts per source.
+
+        Returns:
+            Dict mapping source_id to count
+        """
+        if not self.pool:
+            raise RuntimeError("Not connected to database")
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT source_id, COUNT(*) as count
+                FROM articles
+                GROUP BY source_id
+                ORDER BY count DESC
+            """)
+
+            return {row['source_id']: row['count'] for row in rows}
+
+    # =========================================================================
+    # Maintenance
+    # =========================================================================
+
     async def clear_source(self, source_id: str) -> int:
         """
         Clear all tracked articles for a source.
+        Useful for resetting a scraper's state.
 
         Args:
             source_id: Source identifier
@@ -404,7 +304,24 @@ class ArticleTracker:
 
             # Extract count from result
             deleted = int(result.split()[-1])
-            print(f"[{source_id}] Cleared {deleted} tracked articles")
+            print(f"[{source_id}] Cleared {deleted} tracked URLs")
+            return deleted
+
+    async def clear_all(self) -> int:
+        """
+        Clear ALL tracked articles (all sources).
+        Use with caution!
+
+        Returns:
+            Number of articles deleted
+        """
+        if not self.pool:
+            raise RuntimeError("Not connected to database")
+
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM articles")
+            deleted = int(result.split()[-1])
+            print(f"⚠️  Cleared ALL {deleted} tracked URLs from database")
             return deleted
 
     # =========================================================================
