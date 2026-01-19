@@ -31,6 +31,13 @@ from datetime import datetime
 class ArticleTracker:
     """PostgreSQL-based article tracking for custom scrapers."""
 
+    # ========================================
+    # TEST MODE - Set to True to ignore "seen" status
+    # This makes all articles appear as "new" for testing
+    # REMOVE OR SET TO FALSE FOR PRODUCTION
+    # ========================================
+    TEST_MODE = os.getenv("SCRAPER_TEST_MODE", "").lower() == "true"
+
     def __init__(self, connection_url: Optional[str] = None):
         """
         Initialize article tracker.
@@ -141,20 +148,24 @@ class ArticleTracker:
         print(f"[{source_id}] Stored {stored} headlines in database")
         return stored
 
+
     async def get_stored_headlines(self, source_id: str) -> List[str]:
         """
         Get all stored headlines for a source.
-
-        Args:
-            source_id: Source identifier
-
-        Returns:
-            List of headline strings
+        ...
         """
         if not self.pool:
             raise RuntimeError("Not connected to database")
 
+        # ========================================
+        # TEST MODE BYPASS - Remove for production
+        # ========================================
+        if self.TEST_MODE:
+            print("   ⚠️ TEST MODE: Returning empty list (pretending no headlines seen)")
+            return []
+
         async with self.pool.acquire() as conn:
+
             rows = await conn.fetch("""
                 SELECT headline FROM articles
                 WHERE source_id = $1 AND headline IS NOT NULL
@@ -255,19 +266,21 @@ class ArticleTracker:
     async def filter_new_articles(self, source_id: str, urls: List[str]) -> List[str]:
         """
         Filter list of URLs to only those not seen before.
-
-        Args:
-            source_id: Source identifier
-            urls: List of article URLs
-
-        Returns:
-            List of URLs not in database
+        ...
         """
         if not self.pool:
             raise RuntimeError("Not connected to database")
 
         if not urls:
             return []
+
+        # ========================================
+        # TEST MODE BYPASS - Remove for production
+        # ========================================
+        if self.TEST_MODE:
+            print(f"   ⚠️ TEST MODE: Returning ALL {len(urls)} URLs as 'new' (ignoring database)")
+            return urls
+
 
         async with self.pool.acquire() as conn:
             # Get all existing URLs for this source
