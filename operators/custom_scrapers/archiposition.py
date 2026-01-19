@@ -388,6 +388,11 @@ class ArchipositionScraper(BaseCustomScraper):
         """
         Download hero image and upload to R2.
 
+        Uses multiple strategies:
+        1. HTTP request with User-Agent headers (fastest)
+        2. Cloudscraper for Cloudflare-protected images (fallback)
+        3. Playwright page navigation (last resort)
+
         Args:
             page: Playwright page for downloading
             hero_image: Dict with 'url' key
@@ -400,24 +405,74 @@ class ArchipositionScraper(BaseCustomScraper):
             return None
 
         url = hero_image['url']
+        image_bytes = None
 
         try:
             # Ensure R2 is initialized
             self._ensure_r2()
 
-            # Download image using page navigation
             print(f"      Downloading hero image...")
-            response = await page.goto(url, timeout=15000)
 
-            if not response or not response.ok:
-                print(f"      Failed to download: HTTP {response.status if response else 'no response'}")
-                return hero_image
+            # Strategy 1: Simple HTTP request with User-Agent
+            try:
+                import aiohttp
+                headers = {
+                    "User-Agent": self.user_agent,
+                    "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Referer": "https://www.archiposition.com/",
+                }
 
-            image_bytes = await response.body()
-            print(f"      Downloaded: {len(image_bytes)} bytes")
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                        if response.status == 200:
+                            image_bytes = await response.read()
+                            print(f"      Downloaded (aiohttp): {len(image_bytes)} bytes")
+            except Exception as e:
+                print(f"      aiohttp failed: {e}")
 
-            # Upload to R2
-            if self.r2 and image_bytes:
+            # Strategy 2: Cloudscraper fallback for Cloudflare protection
+            if not image_bytes:
+                try:
+                    import cloudscraper
+                    print(f"      Trying cloudscraper...")
+
+                    scraper = cloudscraper.create_scraper(
+                        browser={'browser': 'chrome', 'platform': 'darwin', 'mobile': False}
+                    )
+                    response = scraper.get(url, timeout=15)
+
+                    if response.status_code == 200:
+                        image_bytes = response.content
+                        print(f"      Downloaded (cloudscraper): {len(image_bytes)} bytes")
+                    else:
+                        print(f"      Cloudscraper failed: HTTP {response.status_code}")
+                except ImportError:
+                    print(f"      Cloudscraper not available")
+                except Exception as e:
+                    print(f"      Cloudscraper failed: {e}")
+
+            # Strategy 3: Playwright page navigation (last resort)
+            if not image_bytes:
+                try:
+                    print(f"      Trying Playwright...")
+                    # Set referer header
+                    await page.set_extra_http_headers({
+                        "User-Agent": self.user_agent,
+                        "Referer": "https://www.archiposition.com/",
+                    })
+                    response = await page.goto(url, timeout=15000)
+
+                    if response and response.ok:
+                        image_bytes = await response.body()
+                        print(f"      Downloaded (Playwright): {len(image_bytes)} bytes")
+                    else:
+                        print(f"      Playwright failed: HTTP {response.status if response else 'no response'}")
+                except Exception as e:
+                    print(f"      Playwright failed: {e}")
+
+            # Upload to R2 if we got image bytes
+            if image_bytes and self.r2:
                 updated_hero = self.r2.save_hero_image(
                     image_bytes=image_bytes,
                     article=article,
@@ -427,6 +482,9 @@ class ArchipositionScraper(BaseCustomScraper):
                 if updated_hero and updated_hero.get('r2_path'):
                     print(f"      Uploaded to R2: {updated_hero['r2_path']}")
                     return updated_hero
+
+            if not image_bytes:
+                print(f"      All download methods failed")
 
             return hero_image
 
