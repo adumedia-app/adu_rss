@@ -354,7 +354,7 @@ Do not include any explanation."""
                             }
                         """)
 
-                        published = await self._parse_date_with_ai(article_text)
+                        published = self._parse_date_with_ai(article_text)
 
                         if published:
                             article_date = datetime.fromisoformat(published.replace('Z', '+00:00'))
