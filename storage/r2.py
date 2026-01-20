@@ -3,24 +3,34 @@
 Cloudflare R2 Storage Module
 Handles all interactions with Cloudflare R2 for storing scraped news data and images.
 
-Folder Structure:
+NEW Folder Structure (for Editorial Selection):
     bucket/
     └── 2026/
         └── January/
-            └── Week-1/
-                └── 2026-01-04/
-                    ├── archdaily.json
-                    ├── dezeen.json
-                    └── images/
-                        ├── archdaily-article-slug.jpg
-                        └── dezeen-project-name.jpg
+            └── Week-4/
+                └── 2026-01-20/
+                    ├── candidates/                    # For editorial selection
+                    │   ├── manifest.json              # Master index
+                    │   ├── archdaily_001.json         # Individual articles
+                    │   ├── archdaily_002.json
+                    │   └── images/
+                    │       ├── archdaily_001.jpg      # Matching images
+                    │       └── archdaily_002.jpg
+                    │
+                    ├── selected/                      # After editorial selection
+                    │   └── digest.json
+                    │
+                    └── archive/                       # Full source data
+                        ├── archdaily.json
+                        └── dezeen.json
 """
 
 import os
 import json
 import re
+import hashlib
 from datetime import datetime, date
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 from urllib.parse import urlparse
 import boto3
 from botocore.config import Config
@@ -40,13 +50,6 @@ class R2Storage:
     ):
         """
         Initialize R2 storage client.
-
-        Args:
-            account_id: Cloudflare account ID (defaults to R2_ACCOUNT_ID env var)
-            access_key_id: R2 access key (defaults to R2_ACCESS_KEY_ID env var)
-            secret_access_key: R2 secret key (defaults to R2_SECRET_ACCESS_KEY env var)
-            bucket_name: R2 bucket name (defaults to R2_BUCKET_NAME env var)
-            public_url: Public URL for the bucket (defaults to R2_PUBLIC_URL env var)
         """
         self.account_id = account_id or os.getenv("R2_ACCOUNT_ID")
         self.access_key_id = access_key_id or os.getenv("R2_ACCESS_KEY_ID")
@@ -80,6 +83,13 @@ class R2Storage:
             )
         )
 
+        # Track article indices per source (for current session)
+        self._source_counters: Dict[str, int] = {}
+
+    # =========================================================================
+    # Path Building Utilities
+    # =========================================================================
+
     def _get_week_number(self, dt: date) -> int:
         """Get the week number within the month (1-5)."""
         first_day = dt.replace(day=1)
@@ -89,11 +99,11 @@ class R2Storage:
         week_number = (adjusted_day - 1) // 7 + 1
         return week_number
 
-    def _build_path(self, source: str, target_date: Optional[date] = None) -> str:
+    def _get_base_path(self, target_date: Optional[date] = None) -> str:
         """
-        Build the storage path based on date.
+        Get base path for a date.
 
-        Format: YYYY/MonthName/Week-N/YYYY-MM-DD/source.json
+        Format: YYYY/MonthName/Week-N/YYYY-MM-DD
         """
         if target_date is None:
             target_date = date.today()
@@ -103,7 +113,68 @@ class R2Storage:
         week_num = self._get_week_number(target_date)
         date_str = target_date.strftime("%Y-%m-%d")
 
-        return f"{year}/{month_name}/Week-{week_num}/{date_str}/{source}.json"
+        return f"{year}/{month_name}/Week-{week_num}/{date_str}"
+
+    def _build_archive_path(self, source: str, target_date: Optional[date] = None) -> str:
+        """
+        Build path for archive storage (full source data).
+
+        Format: YYYY/MonthName/Week-N/YYYY-MM-DD/archive/source.json
+        """
+        base = self._get_base_path(target_date)
+        return f"{base}/archive/{source}.json"
+
+    def _build_candidate_path(
+        self, 
+        source_id: str, 
+        index: int,
+        target_date: Optional[date] = None
+    ) -> str:
+        """
+        Build path for candidate article JSON.
+
+        Format: YYYY/MonthName/Week-N/YYYY-MM-DD/candidates/source_NNN.json
+        """
+        base = self._get_base_path(target_date)
+        return f"{base}/candidates/{source_id}_{index:03d}.json"
+
+    def _build_candidate_image_path(
+        self,
+        source_id: str,
+        index: int,
+        extension: str = "jpg",
+        target_date: Optional[date] = None
+    ) -> str:
+        """
+        Build path for candidate hero image.
+
+        Format: YYYY/MonthName/Week-N/YYYY-MM-DD/candidates/images/source_NNN.ext
+        """
+        base = self._get_base_path(target_date)
+        return f"{base}/candidates/images/{source_id}_{index:03d}.{extension}"
+
+    def _build_manifest_path(self, target_date: Optional[date] = None) -> str:
+        """
+        Build path for manifest file.
+
+        Format: YYYY/MonthName/Week-N/YYYY-MM-DD/candidates/manifest.json
+        """
+        base = self._get_base_path(target_date)
+        return f"{base}/candidates/manifest.json"
+
+    def _build_selected_path(self, target_date: Optional[date] = None) -> str:
+        """
+        Build path for selected digest.
+
+        Format: YYYY/MonthName/Week-N/YYYY-MM-DD/selected/digest.json
+        """
+        base = self._get_base_path(target_date)
+        return f"{base}/selected/digest.json"
+
+    # Legacy path builders (for backward compatibility)
+    def _build_path(self, source: str, target_date: Optional[date] = None) -> str:
+        """Legacy: Build path for source JSON (now uses archive)."""
+        return self._build_archive_path(source, target_date)
 
     def _build_image_path(
         self, 
@@ -113,35 +184,57 @@ class R2Storage:
         target_date: Optional[date] = None
     ) -> str:
         """
-        Build the storage path for an image.
+        Legacy: Build path for image using slug.
 
         Format: YYYY/MonthName/Week-N/YYYY-MM-DD/images/source-slug.ext
         """
         if target_date is None:
             target_date = date.today()
 
-        year = target_date.year
-        month_name = target_date.strftime("%B")
-        week_num = self._get_week_number(target_date)
-        date_str = target_date.strftime("%Y-%m-%d")
+        base = self._get_base_path(target_date)
         clean_slug = self._slugify(article_slug)
 
-        return f"{year}/{month_name}/Week-{week_num}/{date_str}/images/{source}-{clean_slug}.{extension}"
+        return f"{base}/images/{source}-{clean_slug}.{extension}"
+
+    # =========================================================================
+    # Slugify (Fixed for Chinese/Unicode)
+    # =========================================================================
 
     def _slugify(self, text: str, max_length: int = 50) -> str:
-        """Convert text to URL-safe slug."""
+        """
+        Convert text to URL-safe slug.
+        Handles Chinese and other non-ASCII characters by using a hash fallback.
+        """
         if not text:
             return "untitled"
 
+        # First, try to extract ASCII characters only
         slug = text.lower()
-        slug = re.sub(r'[^\w\s-]', '', slug)
-        slug = re.sub(r'[-\s]+', '-', slug)
-        slug = slug.strip('-')
 
-        if len(slug) > max_length:
-            slug = slug[:max_length].rstrip('-')
+        # Keep only ASCII alphanumeric, spaces, and hyphens
+        ascii_slug = re.sub(r'[^a-z0-9\s-]', '', slug)
+        ascii_slug = re.sub(r'[-\s]+', '-', ascii_slug)
+        ascii_slug = ascii_slug.strip('-')
 
-        return slug or "untitled"
+        # If we got a reasonable ASCII slug (at least 5 chars), use it
+        if len(ascii_slug) >= 5:
+            if len(ascii_slug) > max_length:
+                ascii_slug = ascii_slug[:max_length].rstrip('-')
+            return ascii_slug
+
+        # For non-ASCII text (like Chinese), generate a short hash
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()[:8]
+
+        if ascii_slug and len(ascii_slug) >= 2:
+            # Combine any ASCII prefix with hash
+            return f"{ascii_slug[:20]}-{text_hash}"
+        else:
+            # Pure non-ASCII text - use hash only
+            return text_hash
+
+    # =========================================================================
+    # Image Utilities
+    # =========================================================================
 
     def _get_image_extension(self, url: str, content_type: Optional[str] = None) -> str:
         """Determine image extension from URL or content type."""
@@ -180,7 +273,368 @@ class R2Storage:
         return content_types.get(extension, 'image/jpeg')
 
     # =========================================================================
-    # Article Storage
+    # Article Index Management
+    # =========================================================================
+
+    def _get_next_index(self, source_id: str) -> int:
+        """
+        Get the next available index for a source.
+        Starts at 1 for each source.
+        """
+        if source_id not in self._source_counters:
+            self._source_counters[source_id] = 0
+
+        self._source_counters[source_id] += 1
+        return self._source_counters[source_id]
+
+    def reset_counters(self):
+        """Reset all source counters (call at start of pipeline run)."""
+        self._source_counters = {}
+
+    def get_article_id(self, source_id: str, index: int) -> str:
+        """Generate article ID from source and index."""
+        return f"{source_id}_{index:03d}"
+
+    # =========================================================================
+    # NEW: Candidate Storage (for Editorial Selection)
+    # =========================================================================
+
+    def save_candidate(
+        self,
+        article: dict,
+        image_bytes: Optional[bytes] = None,
+        target_date: Optional[date] = None
+    ) -> dict:
+        """
+        Save a single article as an editorial candidate.
+
+        Saves:
+        - Article JSON with summary, tags, metadata
+        - Hero image (if provided) with matching filename
+
+        Args:
+            article: Article dict with ai_summary, tags, etc.
+            image_bytes: Optional hero image bytes
+            target_date: Target date (defaults to today)
+
+        Returns:
+            Dict with saved paths and article_id
+        """
+        source_id = article.get("source_id", "unknown")
+        index = self._get_next_index(source_id)
+        article_id = self.get_article_id(source_id, index)
+
+        if target_date is None:
+            target_date = date.today()
+
+        # Determine image info
+        has_image = False
+        image_path = None
+        image_filename = None
+
+        if image_bytes:
+            hero = article.get("hero_image", {})
+            extension = self._get_image_extension(
+                hero.get("url", ""),
+                None
+            )
+            image_filename = f"{article_id}.{extension}"
+            image_path = self._build_candidate_image_path(
+                source_id, index, extension, target_date
+            )
+            has_image = True
+
+        # Build candidate JSON
+        candidate_data = {
+            "id": article_id,
+            "index": index,
+            "source_id": source_id,
+            "source_name": article.get("source_name", source_id),
+            "title": article.get("title", ""),
+            "link": article.get("link", ""),
+            "published": article.get("published"),
+            "ai_summary": article.get("ai_summary", ""),
+            "tags": article.get("tags", []),
+            "image": {
+                "filename": image_filename,
+                "r2_path": image_path,
+                "has_image": has_image,
+                "original_url": article.get("hero_image", {}).get("url") if has_image else None,
+            },
+            "saved_at": datetime.now().isoformat(),
+        }
+
+        # Save article JSON
+        json_path = self._build_candidate_path(source_id, index, target_date)
+
+        self.client.put_object(
+            Bucket=self.bucket_name,
+            Key=json_path,
+            Body=json.dumps(candidate_data, indent=2, ensure_ascii=False),
+            ContentType="application/json"
+        )
+
+        print(f"   📄 Saved candidate: {article_id}")
+
+        # Save image if provided
+        if image_bytes and image_path:
+            content_type = self._get_content_type(
+                image_path.split('.')[-1]
+            )
+
+            self.client.put_object(
+                Bucket=self.bucket_name,
+                Key=image_path,
+                Body=image_bytes,
+                ContentType=content_type,
+                CacheControl="public, max-age=31536000"
+            )
+
+            print(f"   🖼️  Saved image: {image_filename}")
+
+        return {
+            "article_id": article_id,
+            "json_path": json_path,
+            "image_path": image_path,
+            "has_image": has_image,
+        }
+
+    def save_manifest(
+        self,
+        candidates: List[dict],
+        target_date: Optional[date] = None
+    ) -> str:
+        """
+        Save manifest file with all candidates for the day.
+
+        Args:
+            candidates: List of candidate info dicts from save_candidate()
+            target_date: Target date (defaults to today)
+
+        Returns:
+            Path to manifest file
+        """
+        if target_date is None:
+            target_date = date.today()
+
+        # Group by source
+        by_source: Dict[str, List[str]] = {}
+        for c in candidates:
+            source_id = c["article_id"].rsplit("_", 1)[0]
+            if source_id not in by_source:
+                by_source[source_id] = []
+            by_source[source_id].append(c["article_id"])
+
+        # Build manifest
+        manifest = {
+            "date": target_date.isoformat(),
+            "created_at": datetime.now().isoformat(),
+            "total_candidates": len(candidates),
+            "sources": {
+                source_id: {
+                    "count": len(ids),
+                    "article_ids": sorted(ids)
+                }
+                for source_id, ids in by_source.items()
+            },
+            "candidates": [
+                {
+                    "id": c["article_id"],
+                    "has_image": c["has_image"],
+                    "json_path": c["json_path"],
+                    "image_path": c.get("image_path"),
+                }
+                for c in candidates
+            ]
+        }
+
+        # Save manifest
+        path = self._build_manifest_path(target_date)
+
+        self.client.put_object(
+            Bucket=self.bucket_name,
+            Key=path,
+            Body=json.dumps(manifest, indent=2, ensure_ascii=False),
+            ContentType="application/json"
+        )
+
+        print(f"   📋 Saved manifest: {len(candidates)} candidates")
+        return path
+
+    def get_manifest(self, target_date: Optional[date] = None) -> Optional[dict]:
+        """
+        Retrieve manifest for a given date.
+
+        Args:
+            target_date: Target date (defaults to today)
+
+        Returns:
+            Manifest dict or None if not found
+        """
+        path = self._build_manifest_path(target_date)
+
+        try:
+            response = self.client.get_object(
+                Bucket=self.bucket_name,
+                Key=path
+            )
+            content = response["Body"].read().decode("utf-8")
+            return json.loads(content)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                return None
+            raise
+
+    def get_candidate(
+        self,
+        article_id: str,
+        target_date: Optional[date] = None
+    ) -> Optional[dict]:
+        """
+        Retrieve a single candidate article.
+
+        Args:
+            article_id: Article ID (e.g., "archdaily_001")
+            target_date: Target date (defaults to today)
+
+        Returns:
+            Candidate dict or None if not found
+        """
+        # Parse article_id to get source and index
+        parts = article_id.rsplit("_", 1)
+        if len(parts) != 2:
+            return None
+
+        source_id = parts[0]
+        try:
+            index = int(parts[1])
+        except ValueError:
+            return None
+
+        path = self._build_candidate_path(source_id, index, target_date)
+
+        try:
+            response = self.client.get_object(
+                Bucket=self.bucket_name,
+                Key=path
+            )
+            content = response["Body"].read().decode("utf-8")
+            return json.loads(content)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                return None
+            raise
+
+    def get_all_candidates(
+        self,
+        target_date: Optional[date] = None
+    ) -> List[dict]:
+        """
+        Retrieve all candidate articles for a given date.
+
+        Args:
+            target_date: Target date (defaults to today)
+
+        Returns:
+            List of candidate dicts
+        """
+        manifest = self.get_manifest(target_date)
+        if not manifest:
+            return []
+
+        candidates = []
+        for entry in manifest.get("candidates", []):
+            article_id = entry.get("id")
+            if article_id:
+                candidate = self.get_candidate(article_id, target_date)
+                if candidate:
+                    candidates.append(candidate)
+
+        return candidates
+
+    # =========================================================================
+    # NEW: Selected/Digest Storage
+    # =========================================================================
+
+    def save_selected_digest(
+        self,
+        selected_ids: List[str],
+        target_date: Optional[date] = None,
+        metadata: Optional[dict] = None
+    ) -> str:
+        """
+        Save the editorial selection (selected article IDs).
+
+        Args:
+            selected_ids: List of article IDs that were selected
+            target_date: Target date (defaults to today)
+            metadata: Optional metadata about the selection
+
+        Returns:
+            Path to digest file
+        """
+        if target_date is None:
+            target_date = date.today()
+
+        # Load full candidate data for selected articles
+        selected_articles = []
+        for article_id in selected_ids:
+            candidate = self.get_candidate(article_id, target_date)
+            if candidate:
+                selected_articles.append(candidate)
+
+        digest = {
+            "date": target_date.isoformat(),
+            "selected_at": datetime.now().isoformat(),
+            "total_selected": len(selected_articles),
+            "selected_ids": selected_ids,
+            "articles": selected_articles,
+        }
+
+        if metadata:
+            digest["metadata"] = metadata
+
+        path = self._build_selected_path(target_date)
+
+        self.client.put_object(
+            Bucket=self.bucket_name,
+            Key=path,
+            Body=json.dumps(digest, indent=2, ensure_ascii=False),
+            ContentType="application/json"
+        )
+
+        print(f"   ✅ Saved digest: {len(selected_articles)} selected articles")
+        return path
+
+    def get_selected_digest(
+        self,
+        target_date: Optional[date] = None
+    ) -> Optional[dict]:
+        """
+        Retrieve the selected digest for a given date.
+
+        Args:
+            target_date: Target date (defaults to today)
+
+        Returns:
+            Digest dict or None if not found
+        """
+        path = self._build_selected_path(target_date)
+
+        try:
+            response = self.client.get_object(
+                Bucket=self.bucket_name,
+                Key=path
+            )
+            content = response["Body"].read().decode("utf-8")
+            return json.loads(content)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                return None
+            raise
+
+    # =========================================================================
+    # Legacy: Archive Storage (Full Source Data)
     # =========================================================================
 
     def save_articles(
@@ -190,8 +644,8 @@ class R2Storage:
         target_date: Optional[date] = None,
         metadata: Optional[dict] = None
     ) -> str:
-        """Save articles to R2 storage."""
-        path = self._build_path(source, target_date)
+        """Save articles to archive storage (grouped by source)."""
+        path = self._build_archive_path(source, target_date)
         actual_date = target_date or date.today()
 
         data: dict = {
@@ -212,7 +666,7 @@ class R2Storage:
             ContentType="application/json"
         )
 
-        print(f"   📁 Saved {len(articles)} articles to: {path}")
+        print(f"   📁 Archived {len(articles)} articles to: {path}")
         return path
 
     def get_articles(
@@ -220,8 +674,8 @@ class R2Storage:
         source: str, 
         target_date: Optional[date] = None
     ) -> Optional[dict]:
-        """Retrieve articles from R2 storage."""
-        path = self._build_path(source, target_date)
+        """Retrieve articles from archive storage."""
+        path = self._build_archive_path(source, target_date)
 
         try:
             response = self.client.get_object(
@@ -236,7 +690,7 @@ class R2Storage:
             raise
 
     # =========================================================================
-    # Image Storage
+    # Legacy: Image Storage
     # =========================================================================
 
     def save_image(
@@ -249,10 +703,7 @@ class R2Storage:
         target_date: Optional[date] = None
     ) -> Tuple[str, Optional[str]]:
         """
-        Save an image to R2 storage.
-
-        Returns:
-            Tuple of (storage_path, public_url or None)
+        Save an image to R2 storage (legacy method using slug).
         """
         if not image_bytes:
             raise ValueError("No image data provided")
@@ -336,77 +787,12 @@ class R2Storage:
             return False
 
     # =========================================================================
-    # Listing & Utilities
+    # Utility Methods
     # =========================================================================
 
-    def list_dates(
-        self, 
-        source: Optional[str] = None,
-        year: Optional[int] = None, 
-        month: Optional[str] = None
-    ) -> list[str]:
-        """List available dates in storage."""
-        prefix = ""
-        if year:
-            prefix = f"{year}/"
-            if month:
-                prefix = f"{year}/{month}/"
-
-        try:
-            response = self.client.list_objects_v2(
-                Bucket=self.bucket_name,
-                Prefix=prefix,
-                Delimiter="/"
-            )
-
-            dates: list[str] = []
-            if "Contents" in response:
-                for obj in response["Contents"]:
-                    key = obj["Key"]
-                    if source is None or key.endswith(f"/{source}.json"):
-                        dates.append(key)
-
-            return dates
-        except ClientError as e:
-            print(f"Error listing dates: {e}")
-            return []
-
-    def list_images(
-        self,
-        source: Optional[str] = None,
-        target_date: Optional[date] = None
-    ) -> list[str]:
-        """List images for a given date."""
-        actual_date = target_date or date.today()
-
-        year = actual_date.year
-        month_name = actual_date.strftime("%B")
-        week_num = self._get_week_number(actual_date)
-        date_str = actual_date.strftime("%Y-%m-%d")
-
-        prefix = f"{year}/{month_name}/Week-{week_num}/{date_str}/images/"
-
-        try:
-            response = self.client.list_objects_v2(
-                Bucket=self.bucket_name,
-                Prefix=prefix
-            )
-
-            images: list[str] = []
-            if "Contents" in response:
-                for obj in response["Contents"]:
-                    key = obj["Key"]
-                    if source is None or key.startswith(f"{prefix}{source}-"):
-                        images.append(key)
-
-            return images
-        except ClientError as e:
-            print(f"Error listing images: {e}")
-            return []
-
     def file_exists(self, source: str, target_date: Optional[date] = None) -> bool:
-        """Check if a file exists for the given source and date."""
-        path = self._build_path(source, target_date)
+        """Check if a source file exists."""
+        path = self._build_archive_path(source, target_date)
 
         try:
             self.client.head_object(Bucket=self.bucket_name, Key=path)
@@ -416,7 +802,7 @@ class R2Storage:
 
     def delete_file(self, source: str, target_date: Optional[date] = None) -> bool:
         """Delete a file from storage."""
-        path = self._build_path(source, target_date)
+        path = self._build_archive_path(source, target_date)
 
         try:
             self.client.delete_object(Bucket=self.bucket_name, Key=path)
@@ -451,21 +837,10 @@ class R2Storage:
         stats_json: str,
         target_date: Optional[date] = None
     ) -> str:
-        """
-        Save scraping statistics report to R2 storage.
-
-        Args:
-            source_id: Source identifier
-            stats_json: JSON string of statistics
-            target_date: Target date for the report (defaults to today)
-
-        Returns:
-            Storage path where stats were saved
-        """
+        """Save scraping statistics report to R2 storage."""
         if target_date is None:
             target_date = date.today()
 
-        # Build path: scraping/YYYY-MM-DD/source_id_stats.json
         date_str = target_date.strftime("%Y-%m-%d")
         timestamp = datetime.now().strftime("%H-%M-%S")
         path = f"scraping/{date_str}/{source_id}_stats_{timestamp}.json"
@@ -491,21 +866,10 @@ class R2Storage:
         screenshot_bytes: bytes,
         target_date: Optional[date] = None
     ) -> Tuple[str, Optional[str]]:
-        """
-        Save scraping screenshot to R2 storage for audit purposes.
-
-        Args:
-            source_id: Source identifier (e.g., 'bauwelt')
-            screenshot_bytes: PNG image bytes
-            target_date: Target date for the screenshot (defaults to today)
-
-        Returns:
-            Tuple of (storage_path, public_url or None)
-        """
+        """Save scraping screenshot to R2 storage for audit purposes."""
         if target_date is None:
             target_date = date.today()
 
-        # Build path: scraping/YYYY-MM-DD/source_id_screenshot_HH-MM-SS.png
         date_str = target_date.strftime("%Y-%m-%d")
         timestamp = datetime.now().strftime("%H-%M-%S")
         path = f"scraping/{date_str}/{source_id}_screenshot_{timestamp}.png"
