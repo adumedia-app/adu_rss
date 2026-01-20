@@ -38,7 +38,11 @@ INCLUDE articles about:
 
 EXCLUDE articles about:
 - New issues of architectural magazines even if they mention projects
-- pices about newsletters, even if they mention projects
+- Pieces about newsletters, even if they mention projects
+- Articles about architecture schools, architecture students, or architecture students' projects
+- Interviews
+- Opinion pieces
+- Discussions
 - Interior design and decoration
 - Private residences, single-family homes, villas, apartments
 - Furniture and product design
