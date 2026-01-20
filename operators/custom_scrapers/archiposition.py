@@ -363,14 +363,13 @@ class ArchipositionScraper(BaseCustomScraper):
                     raise RuntimeError("Article tracker not initialized")
 
                 all_urls = [url for url, _ in extracted]
-                seen_urls = await self.tracker.get_stored_headlines(self.source_id)
 
-                # Find new articles
-                new_articles_data = [
-                    (url, title)
-                    for url, title in extracted
-                    if url not in seen_urls
-                ]
+                # Use filter_new_articles to get only new URLs
+                new_urls = await self.tracker.filter_new_articles(self.source_id, all_urls)
+
+                # Build new_articles_data with titles for the new URLs
+                url_to_title = {url: title for url, title in extracted}
+                new_articles_data = [(url, url_to_title[url]) for url in new_urls]
 
                 print(f"[{self.source_id}] Database check:")
                 print(f"   Total extracted: {len(extracted)}")
@@ -379,7 +378,8 @@ class ArchipositionScraper(BaseCustomScraper):
 
                 if not new_articles_data:
                     print(f"[{self.source_id}] No new articles to process")
-                    await self.tracker.store_headlines(self.source_id, all_urls)
+                    # Mark all as seen
+                    await self.tracker.mark_as_seen(self.source_id, all_urls)
                     if self.stats:
                         self.stats.log_final_count(0)
                         self.stats.print_summary()
@@ -454,7 +454,7 @@ class ArchipositionScraper(BaseCustomScraper):
                 # ============================================================
                 # Step 5: Store All URLs and Finalize
                 # ============================================================
-                await self.tracker.store_headlines(self.source_id, all_urls)
+                await self.tracker.mark_as_seen(self.source_id, all_urls)
 
                 # Final Summary
                 print(f"\n[{self.source_id}] Processing Summary:")

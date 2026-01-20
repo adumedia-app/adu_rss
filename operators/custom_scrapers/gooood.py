@@ -106,7 +106,7 @@ class GoooodScraper(BaseCustomScraper):
 
         return True
 
-    def _extract_articles_from_html(self, html: str) -> List[Tuple[str, str, str, str]]:
+    def _extract_articles_from_html(self, html: str) -> List[Tuple[str, str, Optional[str], Optional[str]]]:
         """
         Extract article data from homepage HTML.
 
@@ -120,20 +120,13 @@ class GoooodScraper(BaseCustomScraper):
             html: Page HTML content
 
         Returns:
-            List of tuples: (url, title, date, image_url)
+            List of tuples: (url, title, date, image_url) - date and image_url can be None
         """
         soup = BeautifulSoup(html, 'html.parser')
-        articles: List[Tuple[str, str, str, str]] = []
+        articles: List[Tuple[str, str, Optional[str], Optional[str]]] = []
         seen_urls: set[str] = set()
 
-        # Find article cards - Gooood uses a grid layout
-        # Each article has: image link, title link, date text
-        # Look for the article grid items
-        article_containers = soup.find_all(['article', 'div'], class_=lambda x: x and any(
-            cls in str(x).lower() for cls in ['post', 'item', 'card', 'article']
-        ))
-
-        # Also try direct link parsing from the main content area
+        # Find all links - Gooood uses a grid layout with article links
         # The structure shows links like: href="/cloud-11-by-snohetta-a49.htm"
         all_links = soup.find_all('a', href=True)
 
@@ -292,7 +285,7 @@ class GoooodScraper(BaseCustomScraper):
                 # ============================================================
                 # Step 2: Filter by Date
                 # ============================================================
-                date_filtered: List[Tuple[str, str, str, str]] = []
+                date_filtered: List[Tuple[str, str, Optional[str], Optional[str]]] = []
                 skipped_old = 0
                 skipped_no_date = 0
 
@@ -336,7 +329,7 @@ class GoooodScraper(BaseCustomScraper):
                     raise RuntimeError("Article tracker not initialized")
 
                 filtered_urls = [url for url, _, _, _ in date_filtered]
-                new_urls = await self.tracker.filter_new_urls(self.source_id, filtered_urls)
+                new_urls = await self.tracker.filter_new_articles(self.source_id, filtered_urls)
 
                 print(f"[{self.source_id}] Database filtering:")
                 print(f"   Total after date filter: {len(date_filtered)}")
