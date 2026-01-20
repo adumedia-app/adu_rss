@@ -182,9 +182,6 @@ Do not use any emoji in your response."""
         Returns:
             List of minimal article dicts for main pipeline
         """
-        # Initialize statistics tracking
-        self._init_stats()
-
         print(f"[{self.source_id}] Starting HTML pattern scraping...")
 
         await self._ensure_tracker()
@@ -210,10 +207,6 @@ Do not use any emoji in your response."""
 
                 if not all_links:
                     print(f"[{self.source_id}] No links found")
-                    if self.stats:
-                        self.stats.log_final_count(0)
-                        self.stats.print_summary()
-                        await self._upload_stats_to_r2()
                     return []
 
                 # ============================================================
@@ -226,20 +219,11 @@ Do not use any emoji in your response."""
 
                 if not article_urls:
                     print(f"[{self.source_id}] No real articles found after AI filtering")
-                    if self.stats:
-                        self.stats.log_final_count(0)
-                        self.stats.print_summary()
-                        await self._upload_stats_to_r2()
                     return []
-
-                # Log URLs as "headlines" for stats
-                if self.stats:
-                    self.stats.log_headlines_extracted(article_urls)
 
                 # ============================================================
                 # Step 3: Filter New URLs via Article Tracker
                 # ============================================================
-                # Uses filter_new_articles() which respects TEST_MODE
                 if not self.tracker:
                     raise RuntimeError("Article tracker not initialized")
 
@@ -247,16 +231,8 @@ Do not use any emoji in your response."""
 
                 print(f"[{self.source_id}] {len(new_urls)} new articles (not in database)")
 
-                # Log filtering stats
-                if self.stats:
-                    self.stats.log_new_headlines(new_urls, len(article_urls))
-
                 if not new_urls:
                     print(f"[{self.source_id}] No new articles to process")
-                    if self.stats:
-                        self.stats.log_final_count(0)
-                        self.stats.print_summary()
-                        await self._upload_stats_to_r2()
                     return []
 
                 # Limit to max new articles
@@ -286,7 +262,6 @@ Do not use any emoji in your response."""
                 # ============================================================
                 # Step 5: Mark URLs as Seen and Finalize
                 # ============================================================
-                # Mark all discovered article URLs as seen
                 await self.tracker.mark_as_seen(self.source_id, article_urls)
 
                 # Final Summary
@@ -296,12 +271,6 @@ Do not use any emoji in your response."""
                 print(f"   New articles: {len(new_urls)}")
                 print(f"   Returning to pipeline: {len(new_articles)}")
 
-                # Log final count and upload stats
-                if self.stats:
-                    self.stats.log_final_count(len(new_articles))
-                    self.stats.print_summary()
-                    await self._upload_stats_to_r2()
-
                 return new_articles
 
             finally:
@@ -309,10 +278,6 @@ Do not use any emoji in your response."""
 
         except Exception as e:
             print(f"[{self.source_id}] Error in scraping: {e}")
-            if self.stats:
-                self.stats.log_error(f"Critical error: {str(e)}")
-                self.stats.print_summary()
-                await self._upload_stats_to_r2()
             import traceback
             traceback.print_exc()
             return []

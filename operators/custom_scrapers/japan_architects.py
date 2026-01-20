@@ -324,9 +324,6 @@ Do not use emoji."""
         Returns:
             List of article dicts for main pipeline
         """
-        # Initialize statistics tracking
-        self._init_stats()
-
         print(f"\n[{self.source_id}] Starting HTML pattern scraping...")
         print(f"   URL: {self.base_url}")
 
@@ -387,10 +384,6 @@ Do not use emoji."""
         # Check if we have HTML content
         if not html:
             print(f"[{self.source_id}] Failed to fetch page with both browser and cloudscraper")
-            if self.stats:
-                self.stats.log_error("Failed to fetch page - both browser and cloudscraper failed")
-                self.stats.print_summary()
-                await self._upload_stats_to_r2()
             return []
 
         try:
@@ -404,10 +397,6 @@ Do not use emoji."""
 
             if not extracted:
                 print(f"[{self.source_id}] No articles found")
-                if self.stats:
-                    self.stats.log_final_count(0)
-                    self.stats.print_summary()
-                    await self._upload_stats_to_r2()
                 return []
 
             # ============================================================
@@ -437,10 +426,6 @@ Do not use emoji."""
 
             if not new_urls:
                 print(f"[{self.source_id}] No new articles to process")
-                if self.stats:
-                    self.stats.log_final_count(0)
-                    self.stats.print_summary()
-                    await self._upload_stats_to_r2()
                 return []
 
             # ============================================================
@@ -459,19 +444,13 @@ Do not use emoji."""
 
                 if date_iso:
                     print(f"      Date: {date_iso[:10]}")
-                    if self.stats:
-                        self.stats.log_date_fetched(title, url, date_iso[:10])
                 else:
                     print(f"      Date: Not found")
-                    if self.stats:
-                        self.stats.log_date_fetch_failed(title)
 
                 # Check date limit
                 if not self._is_within_age_limit(date_iso):
                     print(f"      Skipped (too old)")
                     skipped_old += 1
-                    if self.stats:
-                        self.stats.log_filter_rejected(title, url, "Too old")
                     continue
 
                 # Build article dict
@@ -486,9 +465,6 @@ Do not use emoji."""
 
                 new_articles.append(article)
 
-                if self.stats:
-                    self.stats.log_filter_passed(title, url, "Within date range")
-
                 print(f"      Added")
 
             # ============================================================
@@ -500,20 +476,10 @@ Do not use emoji."""
             print(f"   Skipped (too old): {skipped_old}")
             print(f"   Successfully scraped: {len(new_articles)}")
 
-            # Log final count and upload stats
-            if self.stats:
-                self.stats.log_final_count(len(new_articles))
-                self.stats.print_summary()
-                await self._upload_stats_to_r2()
-
             return new_articles
 
         except Exception as e:
             print(f"[{self.source_id}] Error in scraping: {e}")
-            if self.stats:
-                self.stats.log_error(f"Critical error: {str(e)}")
-                self.stats.print_summary()
-                await self._upload_stats_to_r2()
             import traceback
             traceback.print_exc()
             return []
