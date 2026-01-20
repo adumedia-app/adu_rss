@@ -26,6 +26,7 @@ Your task is to classify whether an article should be INCLUDED or EXCLUDED from 
 INCLUDE articles about:
 - Large-scale architectural projects (commercial, cultural, institutional, public)
 - Well-known or award-winning architecture firms (Zaha Hadid, BIG, OMA, Foster + Partners, Herzog & de Meuron, SANAA, Renzo Piano, Snohetta, MVRDV, etc.)
+- Famous architects (Norman Foster, Richard Rogers, Tadao Ando, etc.)
 - Public buildings: museums, libraries, theaters, stadiums, airports, stations
 - Urban planning and masterplans
 - Educational and healthcare facilities
@@ -36,6 +37,8 @@ INCLUDE articles about:
 - Architecture exhibitions and biennales
 
 EXCLUDE articles about:
+- New issues of architectural magazines even if they mention projects
+- pices about newsletters, even if they mention projects
 - Interior design and decoration
 - Private residences, single-family homes, villas, apartments
 - Furniture and product design
