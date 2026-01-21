@@ -10,8 +10,8 @@ Schedule: 18:45 Lisbon time (17:45 UTC in winter, 16:45 UTC in summer)
 Pipeline:
     1. Fetch RSS feeds from configured sources
     2. Scrape full article content (Browserless)
-    3. Generate AI summaries (OpenAI)
-    4. AI content filtering (articles that don't pass are discarded)
+    3. AI content filtering (articles that don't pass are discarded)
+    4. Generate AI summaries (OpenAI) - ONLY for filtered articles
     5. Download hero images
     6. Save articles to R2 storage
 
@@ -110,40 +110,20 @@ def parse_args():
 # Helper Functions
 # =============================================================================
 
-def generate_summaries(articles: list, llm, prompt_template: str) -> list:
-    """Generate AI summaries for articles."""
-    print(f"\n📝 Generating AI summaries for {len(articles)} articles...")
-
-    for i, article in enumerate(articles, 1):
-        title = article.get("title", "No title")
-        source_name = article.get("source_name", article.get("source_id", "Unknown"))
-        print(f"   [{i}/{len(articles)}] [{source_name}] {title[:40]}...")
-
-        try:
-            # summarize_article expects (article, llm, prompt_template)
-            summarized = summarize_article(article, llm, prompt_template)
-            article["ai_summary"] = summarized.get("ai_summary", "")
-            article["tags"] = summarized.get("tags", [])
-        except Exception as e:
-            print(f"      ⚠️ Error: {e}")
-            article["ai_summary"] = article.get("description", "")[:200] + "..."
-            article["tags"] = []
-
-    return articles
-
-
 def filter_articles(articles: list, llm) -> tuple[list, list]:
     """
-    Filter articles using AI.
+    Filter articles using AI - runs BEFORE summarization.
+
+    Uses scraped full_content for better accuracy.
 
     Args:
-        articles: List of articles with ai_summary
+        articles: List of articles with scraped content
         llm: LLM instance
 
     Returns:
         Tuple of (included_articles, excluded_articles)
     """
-    print(f"\n🔍 AI content filtering {len(articles)} articles...")
+    print(f"\n[FILTER] AI content filtering {len(articles)} articles...")
 
     included = []
     excluded = []
@@ -157,30 +137,57 @@ def filter_articles(articles: list, llm) -> tuple[list, list]:
         print(f"   [{i}/{len(articles)}] [{source_name}] {title[:40]}...")
 
         try:
-            # Use the summary for filtering (more accurate than raw description)
-            content_for_filter = article.get("ai_summary", "") or article.get("description", "")
+            # Use scraped full_content for filtering (most accurate)
+            # Fall back to description if full_content not available
+            content_for_filter = (
+                article.get("full_content", "") or 
+                article.get("content", "") or 
+                article.get("description", "")
+            )
 
             # Invoke the chain with proper parameters
             response = filter_chain.invoke({
                 "title": title,
-                "description": content_for_filter[:500],
-                "source": source_name
+                "description": article.get("description", "")[:500],
+                "content": content_for_filter[:1000]  # Use scraped content
             })
 
             result = parse_filter_response(response.content)
 
             if result.get("include", True):
                 included.append(article)
-                print(f"      ✅ Included")
+                print(f"      [OK] Included")
             else:
                 excluded.append(article)
-                print(f"      ❌ Excluded: {result.get('reason', 'N/A')}")
+                print(f"      [SKIP] Excluded: {result.get('reason', 'N/A')}")
 
         except Exception as e:
-            print(f"      ⚠️ Filter error: {e} - including by default")
+            print(f"      [WARN] Filter error: {e} - including by default")
             included.append(article)
 
     return included, excluded
+
+
+def generate_summaries(articles: list, llm, prompt_template: str) -> list:
+    """Generate AI summaries for articles."""
+    print(f"\n[SUMMARY] Generating AI summaries for {len(articles)} articles...")
+
+    for i, article in enumerate(articles, 1):
+        title = article.get("title", "No title")
+        source_name = article.get("source_name", article.get("source_id", "Unknown"))
+        print(f"   [{i}/{len(articles)}] [{source_name}] {title[:40]}...")
+
+        try:
+            # summarize_article expects (article, llm, prompt_template)
+            summarized = summarize_article(article, llm, prompt_template)
+            article["ai_summary"] = summarized.get("ai_summary", "")
+            article["tags"] = summarized.get("tags", [])
+        except Exception as e:
+            print(f"      [WARN] Error: {e}")
+            article["ai_summary"] = article.get("description", "")[:200] + "..."
+            article["tags"] = []
+
+    return articles
 
 
 async def download_hero_images(articles: list, scraper: Optional[ArticleScraper] = None) -> list:
@@ -194,7 +201,7 @@ async def download_hero_images(articles: list, scraper: Optional[ArticleScraper]
     Returns:
         Articles with hero_image.bytes populated
     """
-    print(f"\n🖼️ Downloading hero images for {len(articles)} articles...")
+    print(f"\n[IMAGES] Downloading hero images for {len(articles)} articles...")
 
     downloaded = 0
     failed = 0
@@ -226,19 +233,19 @@ async def download_hero_images(articles: list, scraper: Optional[ArticleScraper]
                         hero["content_type"] = response.headers.get("Content-Type", "image/jpeg")
 
                         downloaded += 1
-                        print(f"   [{i}/{len(articles)}] ✅ {title}... ({len(image_bytes)} bytes)")
+                        print(f"   [{i}/{len(articles)}] [OK] {title}...")
                     else:
                         failed += 1
-                        print(f"   [{i}/{len(articles)}] ⚠️ HTTP {response.status}: {title}...")
+                        print(f"   [{i}/{len(articles)}] [FAIL] HTTP {response.status}: {title}...")
 
             except asyncio.TimeoutError:
                 failed += 1
-                print(f"   [{i}/{len(articles)}] ⏱️ Timeout: {title}...")
+                print(f"   [{i}/{len(articles)}] [TIMEOUT] {title}...")
             except Exception as e:
                 failed += 1
-                print(f"   [{i}/{len(articles)}] ❌ Error: {title}... - {str(e)[:50]}")
+                print(f"   [{i}/{len(articles)}] [ERROR] {title}... {str(e)[:30]}")
 
-    print(f"\n   📊 Downloaded: {downloaded}, Failed: {failed}")
+    print(f"\n   [STATS] Downloaded: {downloaded}, Failed: {failed}")
     return articles
 
 
@@ -247,20 +254,20 @@ def save_candidates_to_r2(articles: list, r2: R2Storage) -> dict:
     Save articles as editorial candidates to R2 storage.
 
     Args:
-        articles: List of article dicts with ai_summary and hero_image.bytes
+        articles: List of article dicts with ai_summary
         r2: R2Storage instance
 
     Returns:
-        Dict with saved paths
+        Dict with save statistics
     """
-    print("\n💾 Saving candidates to R2 storage...")
+    print(f"\n[R2] Saving {len(articles)} candidates to R2 storage...")
 
     # Reset counters for this batch
     r2.reset_counters()
 
     saved_count = 0
     image_count = 0
-    candidates_info = []
+    candidates = []
 
     for article in articles:
         try:
@@ -276,22 +283,26 @@ def save_candidates_to_r2(articles: list, r2: R2Storage) -> dict:
                 image_bytes=image_bytes
             )
 
-            candidates_info.append(result)
+            candidates.append(result)
             saved_count += 1
-            if result.get("has_image"):
+
+            if image_bytes:
                 image_count += 1
 
-        except Exception as e:
-            print(f"   ❌ Error saving {article.get('title', 'unknown')[:30]}: {e}")
+            print(f"   [OK] {result.get('article_id', 'unknown')}")
 
-    # Save manifest
-    if candidates_info:
+        except Exception as e:
+            print(f"   [ERROR] {article.get('title', 'unknown')[:30]}: {e}")
+
+    # Create/update manifest with all candidates
+    if candidates:
         try:
-            r2.save_manifest(candidates_info)
+            manifest_path = r2.save_manifest(candidates)
+            print(f"   [MANIFEST] Saved: {manifest_path}")
         except Exception as e:
-            print(f"   ⚠️ Failed to save manifest: {e}")
+            print(f"   [WARN] Failed to save manifest: {e}")
 
-    print(f"\n   📊 Saved: {saved_count} articles, {image_count} with images")
+    print(f"\n   [STATS] Saved: {saved_count} articles, {image_count} with images")
     return {"saved": saved_count, "with_images": image_count}
 
 
@@ -331,25 +342,25 @@ async def run_pipeline(
         if config:
             valid_sources.append(sid)
         else:
-            print(f"⚠️ Skipping {sid}: not found in config")
+            print(f"[WARN] Skipping {sid}: not found in config")
 
     if not valid_sources:
-        print("❌ No valid RSS sources to run. Exiting.")
+        print("[ERROR] No valid RSS sources to run. Exiting.")
         return
 
     # Log pipeline start
     print(f"\n{'=' * 60}")
-    print("🏛️ ADUmedia RSS Pipeline")
+    print("[START] ADUmedia RSS Pipeline")
     print(f"{'=' * 60}")
-    print(f"📅 {datetime.now().strftime('%B %d, %Y at %H:%M')}")
-    print(f"📡 Sources: {len(valid_sources)}")
+    print(f"[DATE] {datetime.now().strftime('%B %d, %Y at %H:%M')}")
+    print(f"[SOURCES] {len(valid_sources)}")
     if len(valid_sources) <= 10:
         print(f"   {', '.join(valid_sources)}")
     else:
         print(f"   {', '.join(valid_sources[:5])}... and {len(valid_sources)-5} more")
-    print(f"⏰ Looking back: {hours} hours")
-    print(f"🔍 Content filter: {'disabled' if skip_filter else 'enabled'}")
-    print(f"🌐 Content scraping: {'disabled' if skip_scraping else 'enabled'}")
+    print(f"[LOOKBACK] {hours} hours")
+    print(f"[FILTER] {'disabled' if skip_filter else 'enabled'}")
+    print(f"[SCRAPING] {'disabled' if skip_scraping else 'enabled'}")
     print(f"{'=' * 60}")
 
     scraper = None
@@ -360,15 +371,15 @@ async def run_pipeline(
         # Initialize R2 storage
         try:
             r2 = R2Storage()
-            print("✅ R2 storage connected")
+            print("[OK] R2 storage connected")
         except Exception as e:
-            print(f"⚠️ R2 not configured: {e}")
+            print(f"[WARN] R2 not configured: {e}")
             r2 = None
 
         # =================================================================
         # Step 1: Fetch RSS Feeds
         # =================================================================
-        print("\n📡 Step 1: Fetching RSS feeds...")
+        print("\n[STEP 1] Fetching RSS feeds...")
 
         fetcher = RSSFetcher()
         articles = fetcher.fetch_all_sources(
@@ -376,93 +387,93 @@ async def run_pipeline(
             source_ids=valid_sources
         )
 
-        print(f"\n📰 Total articles from RSS: {len(articles)}")
+        print(f"\n[RSS] Total articles from RSS: {len(articles)}")
 
         if not articles:
-            print("\n📭 No new articles found. Exiting.")
+            print("\n[EMPTY] No new articles found. Exiting.")
             return
 
         # =================================================================
         # Step 2: Scrape Full Content (includes hero image URL extraction)
         # =================================================================
         if not skip_scraping and articles:
-            print("\n🌐 Step 2: Scraping full article content...")
+            print("\n[STEP 2] Scraping full article content...")
             try:
                 scraper = ArticleScraper()
                 articles = await scraper.scrape_articles(articles)
 
                 # Count articles with hero images
                 hero_count = sum(1 for a in articles if a.get("hero_image"))
-                print(f"   📊 Scraped {len(articles)} articles, {hero_count} with hero images")
+                print(f"   [STATS] Scraped {len(articles)} articles, {hero_count} with hero images")
             except Exception as e:
-                print(f"   ❌ Scraping failed: {e}")
+                print(f"   [ERROR] Scraping failed: {e}")
                 print("   Continuing with RSS data only...")
         else:
-            print("\n⏭️ Step 2: Skipping content scraping (--rss-only)")
+            print("\n[STEP 2] Skipping content scraping (--rss-only)")
 
         # =================================================================
-        # Step 3: Generate AI Summaries
+        # Step 3: AI Content Filtering (BEFORE summaries - saves API costs)
         # =================================================================
-        print("\n📝 Step 3: Generating AI summaries...")
+        if not skip_filter and articles:
+            print("\n[STEP 3] AI content filtering...")
+            try:
+                llm = create_llm()
+                articles, excluded_articles = filter_articles(articles, llm)
+
+                print(f"\n   [STATS] Filtered: {len(articles)} included, {len(excluded_articles)} excluded")
+
+                if not articles:
+                    print("\n[EMPTY] All articles filtered out. Exiting.")
+                    return
+
+            except Exception as e:
+                print(f"   [ERROR] AI filtering failed: {e}")
+                print("   Continuing with all articles...")
+        else:
+            print("\n[STEP 3] Skipping AI filter (--no-filter)")
+
+        # =================================================================
+        # Step 4: Generate AI Summaries (only for filtered articles)
+        # =================================================================
+        print("\n[STEP 4] Generating AI summaries...")
 
         try:
             llm = create_llm()
             articles = generate_summaries(articles, llm, SUMMARIZE_PROMPT_TEMPLATE)
         except Exception as e:
-            print(f"   ❌ AI summarization failed: {e}")
+            print(f"   [ERROR] AI summarization failed: {e}")
             for article in articles:
                 if not article.get("ai_summary"):
                     article["ai_summary"] = article.get("description", "")[:200] + "..."
                     article["tags"] = []
 
         # =================================================================
-        # Step 4: AI Content Filtering (AFTER summaries)
-        # =================================================================
-        if not skip_filter and articles:
-            print("\n🔍 Step 4: AI content filtering...")
-            try:
-                llm = create_llm()
-                articles, excluded_articles = filter_articles(articles, llm)
-
-                print(f"\n   📊 Filtered: {len(articles)} included, {len(excluded_articles)} excluded")
-
-                if not articles:
-                    print("\n❌ All articles filtered out. Exiting.")
-                    return
-
-            except Exception as e:
-                print(f"   ❌ AI filtering failed: {e}")
-                print("   Continuing with all articles...")
-        else:
-            print("\n⏭️ Step 4: Skipping AI filter (--no-filter)")
-
-        # =================================================================
         # Step 5: Download Hero Images
         # =================================================================
-        print("\n🖼️ Step 5: Downloading hero images...")
+        print("\n[STEP 5] Downloading hero images...")
 
         try:
             articles = await download_hero_images(articles, scraper)
         except Exception as e:
-            print(f"   ❌ Image download failed: {e}")
+            print(f"   [ERROR] Image download failed: {e}")
             print("   Continuing without images...")
 
         # =================================================================
         # Step 6: Save to R2 Storage
         # =================================================================
         if r2:
-            print("\n💾 Step 6: Saving to R2 storage...")
+            print("\n[STEP 6] Saving to R2 storage...")
             save_candidates_to_r2(articles, r2)
         else:
-            print("\n⏭️ Step 6: Skipping R2 storage (not configured)")
+            print("\n[STEP 6] Skipping R2 storage (not configured)")
 
         # =================================================================
         # Done
         # =================================================================
         print(f"\n{'=' * 60}")
-        print("✅ Pipeline completed!")
-        print(f"   📰 Articles processed: {len(articles)}")
-        print(f"   🚫 Articles excluded: {len(excluded_articles)}")
+        print("[DONE] Pipeline completed!")
+        print(f"   Articles processed: {len(articles)}")
+        print(f"   Articles excluded: {len(excluded_articles)}")
         print(f"{'=' * 60}")
 
     finally:
@@ -476,13 +487,13 @@ async def run_pipeline(
 
 def list_available_sources():
     """List all available RSS sources."""
-    print("\n📋 Available RSS Sources")
+    print("\n[LIST] Available RSS Sources")
     print("=" * 60)
 
     tier1 = get_source_ids_by_tier(1)
     tier2 = get_source_ids_by_tier(2)
 
-    print(f"\n🥇 TIER 1 - Primary Sources ({len(tier1)}):")
+    print(f"\nTIER 1 - Primary Sources ({len(tier1)}):")
     print(f"{'Source ID':<25} {'Name':<30} {'Region':<15}")
     print("-" * 70)
     for source_id in tier1:
@@ -491,7 +502,7 @@ def list_available_sources():
         region = config.get("region", "global")
         print(f"{source_id:<25} {name:<30} {region:<15}")
 
-    print(f"\n🥈 TIER 2 - Regional Sources ({len(tier2)}):")
+    print(f"\nTIER 2 - Regional Sources ({len(tier2)}):")
     print(f"{'Source ID':<25} {'Name':<30} {'Region':<15}")
     print("-" * 70)
     for source_id in tier2:
@@ -500,7 +511,7 @@ def list_available_sources():
         region = config.get("region", "global")
         print(f"{source_id:<25} {name:<30} {region:<15}")
 
-    print(f"\n📊 Total: {len(tier1) + len(tier2)} RSS sources")
+    print(f"\n[TOTAL] {len(tier1) + len(tier2)} RSS sources")
     print()
 
 
