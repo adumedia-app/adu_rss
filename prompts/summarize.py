@@ -13,14 +13,15 @@ Your task is to create concise, informative summaries of architecture and design
 Today's date is {current_date}. Use this for temporal context when describing projects.
 
 Guidelines:
-- Start with title: only the project name and author or bureau in this format: Cloud 11 Office Complex / Snøhetta
+- Title format: PROJECT NAME / ARCHITECT OR BUREAU (e.g., "Cloud 11 Office Complex / Snøhetta")
 - Write description: exactly 2 sentences in British English. First sentence: What is the project (who designed what, where). Second sentence: What makes it notable or interesting
 - Be specific and factual, avoid generic praise
 - Use professional architectural terminology where appropriate
 - Keep the tone informative but engaging
 - If the article is an opinion piece, note that it's an opinion piece, but still mention the project discussed
 - If it's an interview, note that it's an interview, but still mention the project discussed
-- Do not use emoji"""
+- CRITICAL: Do not use emojis anywhere in your response
+- CRITICAL: Keep the title clean and professional - just the project name and architect/bureau separated by a forward slash"""
 
 # User message template
 SUMMARIZE_USER_TEMPLATE = """Summarize this architecture article:
@@ -30,14 +31,14 @@ Description: {description}
 Source: {url}
 
 Respond with ONLY:
-1. Title
+1. Title in format: PROJECT NAME / ARCHITECT OR BUREAU
 2. On a new line, a 2-sentence summary
-3. On a new line, 1 relevant tag, the realm of the project (landscapearchitecture, urbanism, residentialdevelopment, etc.). No spaces or hyphens. 
+3. On a new line, 1 relevant tag (the realm of the project: landscapearchitecture, urbanism, residentialdevelopment, etc.). No spaces, hyphens, or special characters in the tag.
 
 Example format:
-Residential tower in Tokyo / Studio XYZ
-Studio XYZ has completed a residential tower in Tokyo featuring a diagrid structural system. The 32-story building uses cross-laminated timber for its facade, making it one of the tallest timber-hybrid structures in Asia.
-residential"""
+Cloud 11 Office Complex / Snøhetta
+Snøhetta has completed an office complex in Tokyo featuring a diagrid structural system. The 32-story building uses cross-laminated timber for its facade, making it one of the tallest timber-hybrid structures in Asia.
+commercial"""
 
 # Combined ChatPromptTemplate for LangChain
 SUMMARIZE_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages([
