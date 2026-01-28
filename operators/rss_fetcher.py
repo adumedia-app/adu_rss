@@ -386,10 +386,33 @@ class RSSFetcher:
             raw_date = entry.get(field)
             if raw_date:
                 try:
-                    # Handle common formats
+                    # Handle common ISO formats
                     dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
                     return dt.isoformat()
                 except (ValueError, TypeError):
+                    pass
+                
+                # Handle Archi.ru non-standard format: "Wed, 28 Jan 2026 16:01:00 GMT+4"
+                # Convert "GMT+N" or "GMT-N" to standard offset format "+0N00" or "-0N00"
+                try:
+                    if 'GMT+' in raw_date or 'GMT-' in raw_date:
+                        # Extract timezone offset
+                        gmt_match = re.search(r'GMT([+-])(\d+)', raw_date)
+                        if gmt_match:
+                            sign = gmt_match.group(1)
+                            offset_hours = gmt_match.group(2)
+                            # Convert to standard format: +0400, -0500, etc.
+                            standard_offset = f"{sign}{offset_hours.zfill(2)}00"
+                            # Replace in string
+                            clean_date = re.sub(r'GMT[+-]\d+', standard_offset, raw_date)
+                            
+                            # Parse using strptime with timezone
+                            # Format: "Wed, 28 Jan 2026 16:01:00 +0400"
+                            dt = datetime.strptime(clean_date, "%a, %d %b %Y %H:%M:%S %z")
+                            # Convert to UTC
+                            dt_utc = dt.astimezone(timezone.utc)
+                            return dt_utc.isoformat()
+                except (ValueError, TypeError, AttributeError):
                     pass
 
         return None
