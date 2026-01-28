@@ -13,10 +13,8 @@ Your task is to create concise, informative summaries of architecture and design
 Today's date is {current_date}. Use this for temporal context when describing projects.
 
 Guidelines:
-- Start with the project name and author or bureau in this format: Cloud 11 Office Complex / Snøhetta
-- Write exactly 2 sentences in British English
-- First sentence: What is the project (who designed what, where)
-- Second sentence: What makes it notable or interesting
+- Start with title: only the project name and author or bureau in this format: Cloud 11 Office Complex / Snøhetta
+- Write description: exactly 2 sentences in British English. First sentence: What is the project (who designed what, where). Second sentence: What makes it notable or interesting
 - Be specific and factual, avoid generic praise
 - Use professional architectural terminology where appropriate
 - Keep the tone informative but engaging
@@ -32,7 +30,7 @@ Description: {description}
 Source: {url}
 
 Respond with ONLY:
-1. Headline
+1. Title
 2. On a new line, a 2-sentence summary
 3. On a new line, 1 relevant tag, the realm of the project (landscapearchitecture, urbanism, residentialdevelopment, etc.). No spaces or hyphens. 
 
