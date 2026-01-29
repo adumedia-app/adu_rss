@@ -259,6 +259,8 @@ async def download_hero_images(articles: list, scraper: Optional[ArticleScraper]
     Returns:
         Articles with hero_image.bytes populated
     """
+    from urllib.parse import urlparse
+
     print(f"\n[IMAGES] Downloading hero images for {len(articles)} articles...")
 
     downloaded = 0
@@ -266,12 +268,16 @@ async def download_hero_images(articles: list, scraper: Optional[ArticleScraper]
 
     # Use aiohttp for direct image downloads (faster than browser)
     timeout = aiohttp.ClientTimeout(total=15)
-    headers = {
+
+    # Base headers (Referer will be added per-request)
+    base_headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
     }
 
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         for i, article in enumerate(articles, 1):
             hero = article.get("hero_image")
             if not hero or not hero.get("url"):
@@ -281,8 +287,21 @@ async def download_hero_images(articles: list, scraper: Optional[ArticleScraper]
             image_url = hero["url"]
             title = article.get("title", "No title")[:30]
 
+            # Build headers with Referer from the article URL or image domain
+            # This bypasses hotlink protection on WordPress sites
+            article_url = article.get("link", "")
+            if article_url:
+                parsed_article = urlparse(article_url)
+                referer = f"{parsed_article.scheme}://{parsed_article.netloc}/"
+            else:
+                # Fallback: use image domain as referer
+                parsed_image = urlparse(image_url)
+                referer = f"{parsed_image.scheme}://{parsed_image.netloc}/"
+
+            headers = {**base_headers, 'Referer': referer}
+
             try:
-                async with session.get(image_url) as response:
+                async with session.get(image_url, headers=headers) as response:
                     if response.status == 200:
                         image_bytes = await response.read()
                         original_content_type = response.headers.get("Content-Type", "image/jpeg")

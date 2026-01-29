@@ -32,7 +32,7 @@ Description: {description}
 Source: {url}
 
 Respond with ONLY:
-1. Title in format: PROJECT NAME / ARCHITECT OR BUREAU or just PROJECT NAME oif author unknown or irrelevant
+1. Title in format: PROJECT NAME / ARCHITECT OR BUREAU or just PROJECT NAME if author unknown or irrelevant
 2. On a new line, a 2-sentence summary
 3. On a new line, 1 relevant tag (one word, the realm or type of the project: urbanism, museums, library, culture, education, airport,  etc.). No spaces, hyphens, or special characters in the tag.
 
