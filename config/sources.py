@@ -137,15 +137,6 @@ SOURCES = {
         "category": "critical_theory",
         "scrape_timeout": 20000,
     },
-    "planetizen": {
-        "name": "Planetizen",
-        "domains": ["planetizen.com", "www.planetizen.com"],
-        "rss_url": "https://www.planetizen.com/frontpage/feed",
-        "tier": 2,
-        "region": "north_america",
-        "category": "urbanism",
-        "scrape_timeout": 20000,
-    },
 
     # =========================================================================
     # TIER 2 - Europe
